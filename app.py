@@ -101,7 +101,7 @@ def start_scanner():
         Option_MarketQuote(xts_marketdata_obj)
         
         # Select CE strikes based on premium difference
-        from main import select_ce_strikes
+        from main import select_ce_strikes, select_pe_strikes
         log_message("Selecting CE strikes based on premium difference...")
         for unique_key, params in result_dict.items():
             symbol = params.get("Symbol")
@@ -111,15 +111,28 @@ def start_scanner():
                 log_message(f"Processing CE strikes for {symbol}")
                 selected_strikes = select_ce_strikes(params)
                 if selected_strikes:
-                    params["optionselectedstrike"] = selected_strikes
-                    log_message(f"Selected strikes for {symbol}: {list(selected_strikes.keys())}")
+                    params["optionselectedstrike_CE"] = selected_strikes
+                    log_message(f"Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
                 else:
-                    log_message(f"No suitable strikes found for {symbol}")
-                    params["optionselectedstrike"] = None
-            else:
-                log_message(f"Skipping {symbol} - Option type is {option_type} (CE processing only)")
-                params["optionselectedstrike"] = None
+                    log_message(f"No suitable CE strikes found for {symbol}")
+                    params["optionselectedstrike_CE"] = None
         
+        # Select PE strikes based on premium difference
+        log_message("Selecting PE strikes based on premium difference...")
+        for unique_key, params in result_dict.items():
+            symbol = params.get("Symbol")
+            option_type = params.get("OptionType")
+            
+            if option_type == "PE":
+                log_message(f"Processing PE strikes for {symbol}")
+                selected_strikes = select_pe_strikes(params)
+                if selected_strikes:
+                    params["optionselectedstrike_PE"] = selected_strikes
+                    log_message(f"Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
+                else:
+                    log_message(f"No suitable PE strikes found for {symbol}")
+                    params["optionselectedstrike_PE"] = None
+
         # Display LTPs in scanner logs
         for unique_key, data in result_dict.items():
             symbol = data.get("Symbol")
@@ -148,21 +161,21 @@ def start_scanner():
                     if len(strikes_list) > 3:
                         log_message(f"  ... and {len(strikes_list) - 3} more strikes")
                     
-                    # Display selected strikes if available
-                    selected_strikes = data.get("optionselectedstrike")
-                    if selected_strikes:
+                    # Display selected CE strikes if available
+                    selected_ce = data.get("optionselectedstrike_CE")
+                    if selected_ce:
                         log_message(f"{symbol} | Selected CE Strikes:")
-                        for strike, strike_data in selected_strikes.items():
+                        for strike, strike_data in selected_ce.items():
                             ltp = strike_data.get("optionltp")
                             instrument_id = strike_data.get("instrument_id")
                             log_message(f"  Strike {strike}: LTP = {ltp}, Instrument ID = {instrument_id}")
                         
                         # Calculate and display premium difference
-                        strikes = list(selected_strikes.keys())
+                        strikes = list(selected_ce.keys())
                         if len(strikes) == 2:
                             strike1, strike2 = strikes[0], strikes[1]  # Higher and lower strikes
-                            ltp1 = selected_strikes[strike1].get("optionltp")
-                            ltp2 = selected_strikes[strike2].get("optionltp")
+                            ltp1 = selected_ce[strike1].get("optionltp")
+                            ltp2 = selected_ce[strike2].get("optionltp")
                             lot_size = data.get("LotSize")
                             margin_required = data.get("MarginRequired")
                             
@@ -172,7 +185,29 @@ def start_scanner():
                                 log_message(f"  Premium Difference: {premium_diff:.2f}")
                                 log_message(f"  Percentage: {percentage:.2f}%")
                     else:
-                        log_message(f"{symbol} | No selected strikes")
+                        log_message(f"{symbol} | No selected CE strikes")
+                    # Display selected PE strikes if available
+                    selected_pe = data.get("optionselectedstrike_PE")
+                    if selected_pe:
+                        log_message(f"{symbol} | Selected PE Strikes:")
+                        for strike, strike_data in selected_pe.items():
+                            ltp = strike_data.get("optionltp")
+                            instrument_id = strike_data.get("instrument_id")
+                            log_message(f"  Strike {strike}: LTP = {ltp}, Instrument ID = {instrument_id}")
+                        strikes = list(selected_pe.keys())
+                        if len(strikes) == 2:
+                            strike1, strike2 = strikes[0], strikes[1]
+                            ltp1 = selected_pe[strike1].get("optionltp")
+                            ltp2 = selected_pe[strike2].get("optionltp")
+                            lot_size = data.get("LotSize")
+                            margin_required = data.get("MarginRequired")
+                            if all([ltp1, ltp2, lot_size, margin_required]):
+                                premium_diff = (ltp2 - ltp1) * lot_size
+                                percentage = abs(premium_diff) / margin_required * 100
+                                log_message(f"  Premium Difference: {premium_diff:.2f}")
+                                log_message(f"  Percentage: {percentage:.2f}%")
+                    else:
+                        log_message(f"{symbol} | No selected PE strikes")
                 else:
                     log_message(f"{symbol} | Strike Range: Not calculated")
             else:
@@ -237,19 +272,31 @@ def get_selected_strikes():
     for unique_key, params in result_dict.items():
         symbol = params.get("Symbol")
         expiry = params.get("Expiry")
-        optiontype = params.get("OptionType")
-        selected = params.get("optionselectedstrike")
-        if selected:
-            for strike, strike_data in selected.items():
+        # Collect CE strikes
+        selected_ce = params.get("optionselectedstrike_CE")
+        if selected_ce:
+            for strike, strike_data in selected_ce.items():
                 selected_strikes_list.append({
                     "symbol": symbol,
                     "strike": strike,
-                    "optiontype": optiontype,
+                    "optiontype": "CE",
+                    "expiry": expiry,
+                    "instrument_id": strike_data.get("instrument_id")
+                })
+        # Collect PE strikes
+        selected_pe = params.get("optionselectedstrike_PE")
+        if selected_pe:
+            for strike, strike_data in selected_pe.items():
+                selected_strikes_list.append({
+                    "symbol": symbol,
+                    "strike": strike,
+                    "optiontype": "PE",
                     "expiry": expiry,
                     "instrument_id": strike_data.get("instrument_id")
                 })
     # Sort so that same symbol strikes are together
-    selected_strikes_list.sort(key=lambda x: (x["symbol"], x["strike"]))
+    selected_strikes_list.sort(key=lambda x: (x["symbol"], x["optiontype"], x["strike"]))
+    print("[DEBUG] API selected_strikes_list:", selected_strikes_list)
     return jsonify({"selected_strikes": selected_strikes_list})
 
 if __name__ == '__main__':

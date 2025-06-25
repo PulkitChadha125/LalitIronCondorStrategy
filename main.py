@@ -531,19 +531,31 @@ def Future_MarketQuote(xts_marketdata):
     for unique_key, params in result_dict.items():
         symbol = params.get("Symbol")
         option_type = params.get("OptionType")
-        
         if option_type == "CE":
             print(f"[INFO] Processing CE strikes for {symbol}")
             selected_strikes = select_ce_strikes(params)
             if selected_strikes:
                 params["optionselectedstrike"] = selected_strikes
-                print(f"[SUCCESS] Selected strikes for {symbol}: {list(selected_strikes.keys())}")
+                print(f"[SUCCESS] Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
             else:
-                print(f"[WARN] No suitable strikes found for {symbol}")
+                print(f"[WARN] No suitable CE strikes found for {symbol}")
+                params["optionselectedstrike"] = None
+        elif option_type == "PE":
+            print(f"[INFO] Processing PE strikes for {symbol}")
+            selected_strikes = select_pe_strikes(params)
+            if selected_strikes:
+                params["optionselectedstrike"] = selected_strikes
+                print(f"[SUCCESS] Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
+            else:
+                print(f"[WARN] No suitable PE strikes found for {symbol}")
                 params["optionselectedstrike"] = None
         else:
-            print(f"[INFO] Skipping {symbol} - Option type is {option_type} (CE processing only)")
+            print(f"[INFO] Skipping {symbol} - Option type is {option_type} (CE/PE processing only)")
             params["optionselectedstrike"] = None
+    # Debug: print all selected strikes for all symbols
+    print("[DEBUG] Final selected_strike summary:")
+    for unique_key, params in result_dict.items():
+        print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike')}")
 
 
 
@@ -708,71 +720,93 @@ def select_ce_strikes(params):
     Select CE strikes based on premium difference and allowed percentage
     Returns nested dictionary with selected strikes or None if no match
     """
-    # Get required data
     optionchain = params.get("Optionchain")
     lot_size = params.get("LotSize")
     margin_required = params.get("MarginRequired")
     allowed_percentage = params.get("AllowedPercentage")
-    
     if not all([optionchain, lot_size, margin_required, allowed_percentage]):
         print(f"[ERROR] Missing required data for strike selection")
         return None
-    
-    # Sort strikes in descending order (highest to lowest)
     strikes_desc = sorted(optionchain.keys(), reverse=True)
     midpoint = len(strikes_desc) // 2
-    
-    print(f"[INFO] Checking {len(strikes_desc)} strikes up to midpoint {midpoint}")
-    
-    # Add percentage field to each strike in optionchain
+    print(f"[INFO] Checking {len(strikes_desc)} CE strikes up to midpoint {midpoint}")
     for strike in optionchain:
         optionchain[strike]["percentage"] = None
-    
-    # Iterate through strikes from highest to midpoint
     for i in range(midpoint):
-        if i + 1 >= len(strikes_desc):
-            break
-            
-        strike1 = strikes_desc[i]      # Higher strike
-        strike2 = strikes_desc[i + 1]  # Lower strike
-        
-        # Get LTPs
-        ltp1 = optionchain[strike1].get("optionltp")
-        ltp2 = optionchain[strike2].get("optionltp")
-        
-        if ltp1 is None or ltp2 is None:
-            print(f"[WARN] Missing LTP for strikes {strike1} or {strike2}")
-            continue
-            
-        # Calculate premium difference
-        premium_diff = (ltp1 - ltp2) * lot_size
-        
-        # Calculate percentage
-        percentage = abs(premium_diff) / margin_required * 100
-        
-        # Store percentage in optionchain for both strikes
-        optionchain[strike1]["percentage"] = percentage
-        optionchain[strike2]["percentage"] = percentage
-        
-        print(f"[DEBUG] Comparing {strike1}({ltp1}) vs {strike2}({ltp2}): Premium={premium_diff:.2f}, Percentage={percentage:.2f}%")
-        
-        # Check if within allowed range
-        if allowed_percentage <= percentage <= (allowed_percentage + 2):
-            print(f"[SUCCESS] Found matching strikes: {strike1} and {strike2} with {percentage:.2f}%")
-            return {
-                strike1: {
-                    "optionltp": ltp1,
-                    "instrument_id": optionchain[strike1].get("instrument_id"),
-                    "percentage": percentage
-                },
-                strike2: {
-                    "optionltp": ltp2,
-                    "instrument_id": optionchain[strike2].get("instrument_id"),
-                    "percentage": percentage
+        for j in range(i+1, min(i+3, len(strikes_desc))):  # look back by 1 and 2
+            strike1 = strikes_desc[i]
+            strike2 = strikes_desc[j]
+            ltp1 = optionchain[strike1].get("optionltp")
+            ltp2 = optionchain[strike2].get("optionltp")
+            if ltp1 is None or ltp2 is None:
+                continue
+            premium_diff = (ltp1 - ltp2) * lot_size
+            percentage = abs(premium_diff) / margin_required * 100
+            optionchain[strike1]["percentage"] = percentage
+            optionchain[strike2]["percentage"] = percentage
+            print(f"[DEBUG] CE Comparing {strike1}({ltp1}) vs {strike2}({ltp2}): Premium={premium_diff:.2f}, Percentage={percentage:.2f}%")
+            if allowed_percentage <= percentage <= (allowed_percentage + 2):
+                print(f"[SUCCESS] Found matching CE strikes: {strike1} and {strike2} with {percentage:.2f}%")
+                return {
+                    strike1: {
+                        "optionltp": ltp1,
+                        "instrument_id": optionchain[strike1].get("instrument_id"),
+                        "percentage": percentage
+                    },
+                    strike2: {
+                        "optionltp": ltp2,
+                        "instrument_id": optionchain[strike2].get("instrument_id"),
+                        "percentage": percentage
+                    }
                 }
-            }
-    
-    print(f"[INFO] No matching strikes found within {allowed_percentage}% to {allowed_percentage + 2}% range")
+    print(f"[INFO] No matching CE strikes found within {allowed_percentage}% to {allowed_percentage + 2}% range")
+    return None
+
+def select_pe_strikes(params):
+    """
+    Select PE strikes based on premium difference and allowed percentage
+    Returns nested dictionary with selected strikes or None if no match
+    """
+    optionchain = params.get("Optionchain")
+    lot_size = params.get("LotSize")
+    margin_required = params.get("MarginRequired")
+    allowed_percentage = params.get("AllowedPercentage")
+    if not all([optionchain, lot_size, margin_required, allowed_percentage]):
+        print(f"[ERROR] Missing required data for PE strike selection")
+        return None
+    strikes_asc = sorted(optionchain.keys())
+    midpoint = len(strikes_asc) // 2
+    print(f"[INFO] Checking {len(strikes_asc)} PE strikes up to midpoint {midpoint}")
+    for strike in optionchain:
+        optionchain[strike]["percentage"] = None
+    for i in range(midpoint):
+        for j in range(i+1, min(i+3, len(strikes_asc))):  # look ahead by 1 and 2
+            strike1 = strikes_asc[i]
+            strike2 = strikes_asc[j]
+            ltp1 = optionchain[strike1].get("optionltp")
+            ltp2 = optionchain[strike2].get("optionltp")
+            if ltp1 is None or ltp2 is None:
+                continue
+            premium_diff = (ltp2 - ltp1) * lot_size
+            percentage = abs(premium_diff) / margin_required * 100
+            optionchain[strike1]["percentage"] = percentage
+            optionchain[strike2]["percentage"] = percentage
+            print(f"[DEBUG] PE Comparing {strike2}({ltp2}) vs {strike1}({ltp1}): Premium={premium_diff:.2f}, Percentage={percentage:.2f}%")
+            if allowed_percentage <= percentage <= (allowed_percentage + 2):
+                print(f"[SUCCESS] Found matching PE strikes: {strike2} and {strike1} with {percentage:.2f}%")
+                return {
+                    strike2: {
+                        "optionltp": ltp2,
+                        "instrument_id": optionchain[strike2].get("instrument_id"),
+                        "percentage": percentage
+                    },
+                    strike1: {
+                        "optionltp": ltp1,
+                        "instrument_id": optionchain[strike1].get("instrument_id"),
+                        "percentage": percentage
+                    }
+                }
+    print(f"[INFO] No matching PE strikes found within {allowed_percentage}% to {allowed_percentage + 2}% range")
     return None
 
 if __name__ == "__main__":
