@@ -82,7 +82,7 @@ def interactivelogin():
     if not interactive_app_key or not interactive_app_secret:
         print("Missing Interactive API credentials in Credentials.csv")
         return None
-    xt = XTSConnect(apiKey=interactive_app_key, secretKey=interactive_app_secret, source="WEBAPI", root="http://colo.srellp.com:3000/interactive")
+    xt = XTSConnect(apiKey=interactive_app_key, secretKey=interactive_app_secret, source="WEBAPI", root="http://colo.srellp.com:3000")
     try:
         response = xt.interactive_login()
         print("Interactive Login Response:", response)
@@ -102,7 +102,10 @@ def interactivelogin():
 
 
 
- 
+def get_open_positions():
+    response=xt.get_open_positions()
+    print("Get Open Positions: ", response)
+    return response
 
 #  INTERAACTIVE LOGIN ABOVE
 
@@ -118,7 +121,7 @@ def place_order(nfo_ins_id,order_quantity,order_side,price,unique_key):
         exchangeSegment=xt.EXCHANGE_NSEFO,
         exchangeInstrumentID=nfo_ins_id,
         productType=xt.PRODUCT_MIS,
-        orderType=xt.ORDER_TYPE_LIMIT,
+        orderType=xt.ORDER_TYPE_MARKET,
         orderSide=val,
         timeInForce=xt.VALIDITY_DAY,
         disclosedQuantity=0,
@@ -127,7 +130,7 @@ def place_order(nfo_ins_id,order_quantity,order_side,price,unique_key):
         stopPrice=0,
         apiOrderSource="WEBAPI",
         orderUniqueIdentifier="454845",
-        clientID="66BP01" )
+        clientID= "*****" )
 
     print("Place Order: ", response)
     write_to_order_logs(f"Broker Order Response: [{datetime.datetime.now()}]  {order_side} quantity: {order_quantity} price: {price} response: {response}")
@@ -276,32 +279,34 @@ def login_interactive_api():
     print("interactive_app_key: ", interactive_app_key)
     print("interactive_app_secret: ", interactive_app_secret)
 
-    
     if not interactive_app_key or not interactive_app_secret:
         print("Missing Interactive API credentials in Credentials.csv")
         return None
-    
-    # For interactive API, you need userID and password
-    # You'll need to add these to your Credentials.csv or provide them here
-    userID = "66BP01"  # Add this to your credentials or use a default
-    password = "Rohit@987"  # Add this to your credentials or use a default
-    
-    print("Note: Current SDK only supports Market Data API. Interactive API login not implemented.")
-    print("You may need to use a different SDK or implement interactive API calls manually.")
-    
-    # For now, we'll create a basic XTSConnect object for market data
-    # and note that interactive functionality is not available
-    xt = XTSConnect(
-        apiKey=interactive_app_key, 
-        secretKey=interactive_app_secret, 
-        source="WEBAPI", 
-        userID=userID,
-        password=password,
-        root="http://colo.srellp.com:3000/interactive"
-    )
-    
-    print("Interactive API object created, but interactive_login() method not available in this SDK")
-    return xt
+
+    try:
+        # Create XTSConnect object with correct parameters
+        xt = XTSConnect(
+            apiKey=interactive_app_key, 
+            secretKey=interactive_app_secret, 
+            source="WEBAPI", 
+            root="http://colo.srellp.com:3000"
+        )
+        
+        response = xt.interactive_login()
+        print("Interactive Login Response:", response)
+        
+        if response and 'result' in response and 'token' in response['result']:
+            print("Interactive login successful")
+            return xt
+        else:
+            print("Interactive login failed: ", response)
+            return None
+            
+    except Exception as e:
+        print(f"Error during interactive login: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 
@@ -330,8 +335,6 @@ def login_marketdata_api():
             apiKey=market_data_app_key,
             secretKey=market_data_app_secret,
             source=source,
-            userID=None,
-            password=None,
             root="http://colo.srellp.com:3000"
         )
 
@@ -535,27 +538,28 @@ def Future_MarketQuote(xts_marketdata):
             print(f"[INFO] Processing CE strikes for {symbol}")
             selected_strikes = select_ce_strikes(params)
             if selected_strikes:
-                params["optionselectedstrike"] = selected_strikes
+                params["optionselectedstrike_CE"] = selected_strikes
                 print(f"[SUCCESS] Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
             else:
                 print(f"[WARN] No suitable CE strikes found for {symbol}")
-                params["optionselectedstrike"] = None
+                params["optionselectedstrike_CE"] = None
         elif option_type == "PE":
             print(f"[INFO] Processing PE strikes for {symbol}")
             selected_strikes = select_pe_strikes(params)
             if selected_strikes:
-                params["optionselectedstrike"] = selected_strikes
+                params["optionselectedstrike_PE"] = selected_strikes
                 print(f"[SUCCESS] Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
             else:
                 print(f"[WARN] No suitable PE strikes found for {symbol}")
-                params["optionselectedstrike"] = None
+                params["optionselectedstrike_PE"] = None
         else:
             print(f"[INFO] Skipping {symbol} - Option type is {option_type} (CE/PE processing only)")
-            params["optionselectedstrike"] = None
+            params["optionselectedstrike_CE"] = None
+            params["optionselectedstrike_PE"] = None
     # Debug: print all selected strikes for all symbols
     print("[DEBUG] Final selected_strike summary:")
     for unique_key, params in result_dict.items():
-        print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike')}")
+        print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike_CE') or params.get('optionselectedstrike_PE')}")
 
 
 
@@ -572,13 +576,46 @@ def main_strategy():
             print("Market Data API not initialized")
             return
             
+        print(f"\nStarting main strategy at {datetime.datetime.now()}")
         
-        Future_MarketQuote(xts_marketdata) 
-        # Process each symbol from TradeSettings.csv
+        # Step 1: Fetch Future LTPs and calculate strike ranges
+        Future_MarketQuote(xts_marketdata)
+        
+        # Step 2: Fetch option instrument IDs for all strikes
+        fetch_option_instrument_ids(xts_marketdata)
+        
+        # Step 3: Fetch option LTPs for all strikes
+        Option_MarketQuote(xts_marketdata)
+        
+        # Step 4: Select strikes based on criteria
         for unique_key, params in result_dict.items():
-            # initialize loop-specific variables to avoid UnboundLocalError
-            symbol_name = params["Symbol"]
+            symbol = params.get("Symbol")
+            option_type = params.get("OptionType")
             
+            if option_type == "CE":
+                print(f"Processing CE strikes for {symbol}")
+                selected_strikes = select_ce_strikes(params)
+                if selected_strikes:
+                    params["optionselectedstrike_CE"] = selected_strikes
+                    print(f"Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
+                else:
+                    print(f"No suitable CE strikes found for {symbol}")
+                    params["optionselectedstrike_CE"] = None
+            
+            elif option_type == "PE":
+                print(f"Processing PE strikes for {symbol}")
+                selected_strikes = select_pe_strikes(params)
+                if selected_strikes:
+                    params["optionselectedstrike_PE"] = selected_strikes
+                    print(f"Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
+                else:
+                    print(f"No suitable PE strikes found for {symbol}")
+                    params["optionselectedstrike_PE"] = None
+        
+        # Step 5: Print summary
+        print("[DEBUG] Final selected_strike summary:")
+        for unique_key, params in result_dict.items():
+            print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike_CE') or params.get('optionselectedstrike_PE')}")
             
     except Exception as e:
         print("Error in main strategy:", str(e))
@@ -815,6 +852,7 @@ if __name__ == "__main__":
     
     get_api_credentials()
     xts_marketdata = login_marketdata_api()
+    login_interactive_api()
     # interactivelogin()
     get_user_settings()
     # fetch_MarketQuote(xts_marketdata)

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Net Position Panel - Lalit Option Scanner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .nav-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .nav-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 22px;
+            font-weight: 600;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .position-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .position-table th,
+        .position-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .position-table th {
+            background: #f8fafc;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .position-table tr:hover {
+            background: #f9fafb;
+        }
+
+        .pnl-positive {
+            color: #059669;
+            font-weight: 600;
+        }
+
+        .pnl-negative {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .squareoff-btn {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .squareoff-btn:hover {
+            background: linear-gradient(135deg, #dc2626, #ef4444);
+        }
+
+        .exit-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .exit-btn:hover {
+            background: linear-gradient(135deg, #764ba2, #667eea);
+        }
+
+        .no-positions {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+            font-style: italic;
+        }
+
+        @media (max-width: 768px) {
+            .container { max-width: 100%; }
+            .header { flex-direction: column; gap: 15px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Net Position Panel</h1>
+            <a href="/" class="nav-btn">🏠 Scanner</a>
+        </div>
+        <div class="panel">
+            <button class="squareoff-btn" onclick="squareOffAll()">Square Off All</button>
+            <div id="positionsTable">
+                <div class="no-positions">Loading positions...</div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let positionsData = [];
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshPositions();
+            setInterval(refreshPositions, 30000);
+        });
+        async function refreshPositions() {
+            try {
+                const response = await fetch('/api/positions');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    positionsData = (data.positions || []).filter(pos => pos.status === 'ACTIVE');
+                    updatePositionsTable();
+                } else {
+                    showError('Failed to fetch positions: ' + data.message);
+                    document.getElementById('positionsTable').innerHTML = '<div class="no-positions">No positions found</div>';
+                }
+            } catch (error) {
+                showError('Error fetching positions: ' + error.message);
+                document.getElementById('positionsTable').innerHTML = '<div class="no-positions">No positions found</div>';
+            }
+        }
+        function updatePositionsTable() {
+            const tableContainer = document.getElementById('positionsTable');
+            if (positionsData.length === 0) {
+                tableContainer.innerHTML = '<div class="no-positions">No running positions</div>';
+                return;
+            }
+            const table = `
+                <table class="position-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Strike</th>
+                            <th>Type</th>
+                            <th>Quantity</th>
+                            <th>P&L</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${positionsData.map((pos, index) => `
+                            <tr>
+                                <td>${pos.symbol}</td>
+                                <td>${pos.strike}</td>
+                                <td>${pos.optionType}</td>
+                                <td>${pos.quantity}</td>
+                                <td class="${pos.pnl > 0 ? 'pnl-positive' : pos.pnl < 0 ? 'pnl-negative' : ''}">₹${pos.pnl?.toFixed(2) || '0.00'}</td>
+                                <td><button class="exit-btn" onclick="exitPosition('${pos.id}')">Exit</button></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+            tableContainer.innerHTML = table;
+        }
+        async function exitPosition(positionId) {
+            if (!confirm('Are you sure you want to exit this position?')) return;
+            try {
+                const response = await fetch('/api/close_position', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ position_id: positionId })
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showSuccess('Position exited successfully');
+                    refreshPositions();
+                } else {
+                    showError('Failed to exit position: ' + data.message);
+                }
+            } catch (error) {
+                showError('Error exiting position: ' + error.message);
+            }
+        }
+        async function squareOffAll() {
+            if (!confirm('Are you sure you want to square off all positions?')) return;
+            try {
+                const response = await fetch('/api/close_all_positions', { method: 'POST' });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    showSuccess('All positions squared off successfully');
+                    refreshPositions();
+                } else {
+                    showError('Failed to square off all positions: ' + data.message);
+                }
+            } catch (error) {
+                showError('Error squaring off all positions: ' + error.message);
+            }
+        }
+        function showSuccess(message) { showNotification(message, 'success'); }
+        function showError(message) { showNotification(message, 'error'); }
+        function showNotification(message, type) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed; top: 20px; right: 20px; padding: 15px 20px; border-radius: 8px; color: white; font-weight: 500; z-index: 1000; background: ${type === 'success' ? '#10b981' : '#ef4444'}; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            setTimeout(() => { notification.remove(); }, 3000);
+        }
+    </script>
+</body>
+</html> 

@@ -3,6 +3,8 @@ import csv
 import json
 from datetime import datetime
 from main import login_marketdata_api, login_interactive_api, get_user_settings, get_result_dict, Future_instrument_id_list, Equity_instrument_id_list
+import logging
+import os
 
 app = Flask(__name__)
 
@@ -90,48 +92,13 @@ def start_scanner():
         # Use the existing Future_MarketQuote function to fetch LTPs
         Future_MarketQuote(xts_marketdata_obj)
         
-        # Fetch option instrument IDs for all strikes
-        from main import fetch_option_instrument_ids
-        log_message("Fetching option instrument IDs for all strikes...")
-        fetch_option_instrument_ids(xts_marketdata_obj)
+        # Use main_strategy to handle all the processing in one go
+        from main import main_strategy
+        log_message("Running main strategy...")
+        main_strategy()
         
-        # Fetch option LTPs for all strikes
-        from main import Option_MarketQuote
-        log_message("Fetching option LTPs for all strikes...")
-        Option_MarketQuote(xts_marketdata_obj)
-        
-        # Select CE strikes based on premium difference
-        from main import select_ce_strikes, select_pe_strikes
-        log_message("Selecting CE strikes based on premium difference...")
-        for unique_key, params in result_dict.items():
-            symbol = params.get("Symbol")
-            option_type = params.get("OptionType")
-            
-            if option_type == "CE":
-                log_message(f"Processing CE strikes for {symbol}")
-                selected_strikes = select_ce_strikes(params)
-                if selected_strikes:
-                    params["optionselectedstrike_CE"] = selected_strikes
-                    log_message(f"Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
-                else:
-                    log_message(f"No suitable CE strikes found for {symbol}")
-                    params["optionselectedstrike_CE"] = None
-        
-        # Select PE strikes based on premium difference
-        log_message("Selecting PE strikes based on premium difference...")
-        for unique_key, params in result_dict.items():
-            symbol = params.get("Symbol")
-            option_type = params.get("OptionType")
-            
-            if option_type == "PE":
-                log_message(f"Processing PE strikes for {symbol}")
-                selected_strikes = select_pe_strikes(params)
-                if selected_strikes:
-                    params["optionselectedstrike_PE"] = selected_strikes
-                    log_message(f"Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
-                else:
-                    log_message(f"No suitable PE strikes found for {symbol}")
-                    params["optionselectedstrike_PE"] = None
+        # Note: All processing (fetch_option_instrument_ids, Option_MarketQuote, strike selection) 
+        # is now handled within main_strategy() to avoid duplication
 
         # Display LTPs in scanner logs
         for unique_key, data in result_dict.items():
@@ -281,7 +248,9 @@ def get_selected_strikes():
                     "strike": strike,
                     "optiontype": "CE",
                     "expiry": expiry,
-                    "instrument_id": strike_data.get("instrument_id")
+                    "instrument_id": strike_data.get("instrument_id"),
+                    "optionltp": strike_data.get("optionltp"),
+                    "unique_key": unique_key
                 })
         # Collect PE strikes
         selected_pe = params.get("optionselectedstrike_PE")
@@ -292,12 +261,394 @@ def get_selected_strikes():
                     "strike": strike,
                     "optiontype": "PE",
                     "expiry": expiry,
-                    "instrument_id": strike_data.get("instrument_id")
+                    "instrument_id": strike_data.get("instrument_id"),
+                    "optionltp": strike_data.get("optionltp"),
+                    "unique_key": unique_key
                 })
     # Sort so that same symbol strikes are together
     selected_strikes_list.sort(key=lambda x: (x["symbol"], x["optiontype"], x["strike"]))
     print("[DEBUG] API selected_strikes_list:", selected_strikes_list)
     return jsonify({"selected_strikes": selected_strikes_list})
+
+@app.route('/api/place_order', methods=['POST'])
+def place_order_api():
+    """API endpoint to place orders via buy/sell buttons"""
+    try:
+        from main import result_dict, xt, place_order
+        
+        data = request.get_json()
+        symbol = data.get("symbol")
+        strike = data.get("strike")
+        optiontype = data.get("optiontype")
+        order_side = data.get("order_side")  # "BUY" or "SELL"
+        unique_key = data.get("unique_key")
+        
+        if not all([symbol, strike, optiontype, order_side, unique_key]):
+            return jsonify({"status": "error", "message": "Missing required parameters"})
+        
+        # Convert strike to integer since dictionary keys are integers
+        try:
+            strike = int(strike)
+        except (ValueError, TypeError):
+            return jsonify({"status": "error", "message": f"Invalid strike value: {strike}"})
+        
+        # Get the params from result_dict using unique_key
+        params = result_dict.get(unique_key)
+        if not params:
+            return jsonify({"status": "error", "message": f"Symbol {symbol} not found in result_dict"})
+        
+        # Get the selected strikes based on option type
+        selected_strikes_key = f"optionselectedstrike_{optiontype}"
+        selected_strikes = params.get(selected_strikes_key)
+        
+        # Debug logging
+        log_message(f"[DEBUG] Looking for strike {strike} (type: {type(strike)}) in {optiontype} strikes")
+        log_message(f"[DEBUG] Available strikes: {list(selected_strikes.keys()) if selected_strikes else 'None'}")
+        log_message(f"[DEBUG] Strike types: {[type(k) for k in (selected_strikes.keys() if selected_strikes else [])]}")
+        
+        if not selected_strikes:
+            return jsonify({"status": "error", "message": f"No {optiontype} strikes selected for {symbol}"})
+        
+        if strike not in selected_strikes:
+            return jsonify({"status": "error", "message": f"Strike {strike} not found in selected {optiontype} strikes. Available: {list(selected_strikes.keys())}"})
+        
+        # Get the strike data
+        strike_data = selected_strikes[strike]
+        instrument_id = strike_data.get("instrument_id")
+        optionltp = strike_data.get("optionltp")
+        
+        if not instrument_id or not optionltp:
+            return jsonify({"status": "error", "message": f"Missing instrument_id or optionltp for strike {strike}"})
+        
+        # Calculate order quantity: lot_size * quantity
+        lot_size = params.get("LotSize")
+        quantity = params.get("Quantity")
+        
+        if not lot_size or not quantity:
+            return jsonify({"status": "error", "message": "Missing lot_size or quantity"})
+        
+        order_quantity = lot_size * quantity
+        
+        # Check if interactive API is logged in
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in. Please login first."})
+        
+        # Place the order
+        response = place_order(
+            nfo_ins_id=instrument_id,
+            order_quantity=order_quantity,
+            order_side=order_side,
+            price=optionltp,
+            unique_key=unique_key
+        )
+        
+        log_message(f"[ORDER] {order_side} order placed for {symbol} {strike} {optiontype}")
+        log_message(f"[ORDER] Quantity: {order_quantity}, Price: {optionltp}, Response: {response}")
+        
+        return jsonify({
+            "status": "success", 
+            "message": f"{order_side} order placed successfully",
+            "order_details": {
+                "symbol": symbol,
+                "strike": strike,
+                "optiontype": optiontype,
+                "order_side": order_side,
+                "quantity": order_quantity,
+                "price": optionltp,
+                "response": response
+            }
+        })
+        
+    except Exception as e:
+        log_message(f"[ERROR] Failed to place order: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Failed to place order: {str(e)}"})
+
+@app.route('/api/login_status', methods=['GET'])
+def get_login_status():
+    """API endpoint to check login status of both APIs"""
+    try:
+        from main import xts_marketdata, xt
+        
+        market_data_status = "logged_in" if (xts_marketdata and xts_marketdata.token) else "not_logged_in"
+        interactive_status = "logged_in" if (xt and xt.token) else "not_logged_in"
+        
+        return jsonify({
+            "market_data_api": market_data_status,
+            "interactive_api": interactive_status
+        })
+    except Exception as e:
+        return jsonify({
+            "market_data_api": "error",
+            "interactive_api": "error",
+            "error": str(e)
+        })
+
+@app.route('/netposition')
+def netposition():
+    """Net Position Panel page"""
+    return render_template('netposition.html')
+
+@app.route('/api/positions', methods=['GET'])
+def get_positions():
+    """API endpoint to get all positions"""
+    try:
+        from main import xt
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        # Get positions from XTS API
+        response = xt.get_positions()
+        
+        if response.get('type') == 'success':
+            positions = response.get('result', [])
+            
+            # Transform positions data for frontend
+            transformed_positions = []
+            for pos in positions:
+                # Calculate P&L
+                avg_price = pos.get('AveragePrice', 0)
+                ltp = pos.get('LastTradedPrice', 0)
+                quantity = pos.get('Quantity', 0)
+                
+                # P&L calculation (simplified)
+                pnl = (ltp - avg_price) * quantity if pos.get('OrderSide') == 'BUY' else (avg_price - ltp) * quantity
+                day_pnl = pnl  # For now, using same as total P&L
+                
+                transformed_positions.append({
+                    'id': pos.get('PositionID'),
+                    'symbol': pos.get('ScripName', ''),
+                    'strike': pos.get('StrikePrice', ''),
+                    'optionType': pos.get('OptionType', ''),
+                    'quantity': quantity,
+                    'avgPrice': avg_price,
+                    'ltp': ltp,
+                    'pnl': pnl,
+                    'dayPnl': day_pnl,
+                    'status': 'ACTIVE' if quantity > 0 else 'CLOSED',
+                    'openDate': pos.get('TradeDate', ''),
+                    'closeDate': pos.get('CloseDate', ''),
+                    'orderSide': pos.get('OrderSide', ''),
+                    'exchangeSegment': pos.get('ExchangeSegment', '')
+                })
+            
+            return jsonify({
+                "status": "success",
+                "positions": transformed_positions
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to fetch positions: {response.get('description', 'Unknown error')}"
+            })
+            
+    except Exception as e:
+        log_message(f"[ERROR] Failed to get positions: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to get positions: {str(e)}"})
+
+@app.route('/api/close_position', methods=['POST'])
+def close_position():
+    """API endpoint to close a specific position"""
+    try:
+        from main import xt
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        data = request.get_json()
+        position_id = data.get('position_id')
+        
+        if not position_id:
+            return jsonify({"status": "error", "message": "Position ID is required"})
+        
+        # Close position using XTS API
+        response = xt.close_position(position_id)
+        
+        if response.get('type') == 'success':
+            log_message(f"[POSITION] Closed position {position_id}")
+            return jsonify({
+                "status": "success",
+                "message": "Position closed successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to close position: {response.get('description', 'Unknown error')}"
+            })
+            
+    except Exception as e:
+        log_message(f"[ERROR] Failed to close position: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to close position: {str(e)}"})
+
+@app.route('/api/close_all_positions', methods=['POST'])
+def close_all_positions():
+    """API endpoint to close all positions"""
+    try:
+        from main import xt
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        # Get all positions first
+        positions_response = xt.get_positions()
+        
+        if positions_response.get('type') != 'success':
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to get positions: {positions_response.get('description', 'Unknown error')}"
+            })
+        
+        positions = positions_response.get('result', [])
+        closed_count = 0
+        
+        for position in positions:
+            if position.get('Quantity', 0) > 0:  # Only close active positions
+                try:
+                    response = xt.close_position(position.get('PositionID'))
+                    if response.get('type') == 'success':
+                        closed_count += 1
+                except Exception as e:
+                    log_message(f"[ERROR] Failed to close position {position.get('PositionID')}: {str(e)}")
+        
+        log_message(f"[POSITION] Closed {closed_count} positions")
+        return jsonify({
+            "status": "success",
+            "message": f"Closed {closed_count} positions successfully"
+        })
+        
+    except Exception as e:
+        log_message(f"[ERROR] Failed to close all positions: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to close all positions: {str(e)}"})
+
+@app.route('/api/close_selected_positions', methods=['POST'])
+def close_selected_positions():
+    """API endpoint to close selected positions"""
+    try:
+        from main import xt
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        data = request.get_json()
+        position_ids = data.get('position_ids', [])
+        
+        if not position_ids:
+            return jsonify({"status": "error", "message": "No position IDs provided"})
+        
+        closed_count = 0
+        
+        for position_id in position_ids:
+            try:
+                response = xt.close_position(position_id)
+                if response.get('type') == 'success':
+                    closed_count += 1
+            except Exception as e:
+                log_message(f"[ERROR] Failed to close position {position_id}: {str(e)}")
+        
+        log_message(f"[POSITION] Closed {closed_count} selected positions")
+        return jsonify({
+            "status": "success",
+            "message": f"Closed {closed_count} positions successfully"
+        })
+        
+    except Exception as e:
+        log_message(f"[ERROR] Failed to close selected positions: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to close selected positions: {str(e)}"})
+
+@app.route('/api/export_positions', methods=['GET'])
+def export_positions():
+    """API endpoint to export positions to CSV"""
+    try:
+        from main import xt
+        import csv
+        from io import StringIO
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        # Get positions
+        response = xt.get_positions()
+        
+        if response.get('type') != 'success':
+            return jsonify({"status": "error", "message": "Failed to fetch positions"})
+        
+        positions = response.get('result', [])
+        
+        # Create CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow([
+            'Symbol', 'Strike', 'Option Type', 'Quantity', 'Average Price', 
+            'LTP', 'P&L', 'Status', 'Order Side', 'Exchange Segment', 'Trade Date'
+        ])
+        
+        # Write data
+        for pos in positions:
+            avg_price = pos.get('AveragePrice', 0)
+            ltp = pos.get('LastTradedPrice', 0)
+            quantity = pos.get('Quantity', 0)
+            
+            # Calculate P&L
+            pnl = (ltp - avg_price) * quantity if pos.get('OrderSide') == 'BUY' else (avg_price - ltp) * quantity
+            
+            writer.writerow([
+                pos.get('ScripName', ''),
+                pos.get('StrikePrice', ''),
+                pos.get('OptionType', ''),
+                quantity,
+                avg_price,
+                ltp,
+                pnl,
+                'ACTIVE' if quantity > 0 else 'CLOSED',
+                pos.get('OrderSide', ''),
+                pos.get('ExchangeSegment', ''),
+                pos.get('TradeDate', '')
+            ])
+        
+        output.seek(0)
+        
+        from flask import Response
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=positions_{datetime.now().strftime("%Y%m%d")}.csv'}
+        )
+        
+    except Exception as e:
+        log_message(f"[ERROR] Failed to export positions: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to export positions: {str(e)}"})
+
+@app.route('/api/position_history', methods=['GET'])
+def get_position_history():
+    """API endpoint to get position history"""
+    try:
+        from main import xt
+        
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in"})
+        
+        # Get position history from XTS API
+        response = xt.get_position_history()
+        
+        if response.get('type') == 'success':
+            history = response.get('result', [])
+            return jsonify({
+                "status": "success",
+                "history": history
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to get position history: {response.get('description', 'Unknown error')}"
+            })
+            
+    except Exception as e:
+        log_message(f"[ERROR] Failed to get position history: {str(e)}")
+        return jsonify({"status": "error", "message": f"Failed to get position history: {str(e)}"})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000) 

@@ -1,0 +1,12 @@
+Broker Order Response: [2025-06-26 14:40:31.150724]  BUY quantity: 475 price: 4.95 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044301, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------
+Broker Order Response: [2025-06-26 14:40:56.022690]  SELL quantity: 475 price: 4.95 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044302, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------
+Broker Order Response: [2025-06-26 14:41:01.849541]  BUY quantity: 750 price: 3.2 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044303, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------
+Broker Order Response: [2025-06-26 14:41:05.364081]  SELL quantity: 750 price: 3.2 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044304, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------
+Broker Order Response: [2025-06-26 14:41:10.922938]  BUY quantity: 800 price: 1.05 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044305, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------
+Broker Order Response: [2025-06-26 14:41:11.844120]  SELL quantity: 800 price: 1.05 response: {'type': 'success', 'code': 's-orders-0001', 'description': 'API Order Id sent', 'result': {'AppOrderID': 1130044306, 'ClientID': '*****', 'OrderUniqueIdentifier': '454845'}}
+--------------------------------------------------

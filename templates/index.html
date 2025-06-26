@@ -32,9 +32,23 @@
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
             <div class="flex items-center justify-between mb-6">
                 <h1 class="text-2xl font-bold text-gray-800">XTS Scanner Dashboard</h1>
-                <div class="flex items-center">
-                    <span id="statusIndicator" class="status-indicator status-stopped"></span>
-                    <span id="statusText" class="text-gray-600">Stopped</span>
+                <div class="flex items-center space-x-4">
+                    <a href="/netposition" 
+                       class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                        📊 Net Positions
+                    </a>
+                    <div class="flex items-center space-x-2">
+                        <span class="text-sm text-gray-600">Market Data:</span>
+                        <span id="marketDataStatus" class="px-2 py-1 text-xs rounded bg-gray-200">Unknown</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <span class="text-sm text-gray-600">Interactive:</span>
+                        <span id="interactiveStatus" class="px-2 py-1 text-xs rounded bg-gray-200">Unknown</span>
+                    </div>
+                    <div class="flex items-center">
+                        <span id="statusIndicator" class="status-indicator status-stopped"></span>
+                        <span id="statusText" class="text-gray-600">Stopped</span>
+                    </div>
                 </div>
             </div>
             
@@ -109,6 +123,68 @@
             let last = logsData.logs && logsData.logs.length ? logsData.logs[logsData.logs.length-1] : '';
             if (last.includes('Scanner started')) updateStatus('running');
             else if (last.includes('Scanner stopped')) updateStatus('stopped');
+            
+            // Check login status
+            await checkLoginStatus();
+        }
+
+        async function checkLoginStatus() {
+            try {
+                const response = await fetch('/api/login_status');
+                const data = await response.json();
+                
+                const marketDataStatus = document.getElementById('marketDataStatus');
+                const interactiveStatus = document.getElementById('interactiveStatus');
+                
+                // Update market data status
+                if (data.market_data_api === 'logged_in') {
+                    marketDataStatus.textContent = 'Logged In';
+                    marketDataStatus.className = 'px-2 py-1 text-xs rounded bg-green-200 text-green-800';
+                } else {
+                    marketDataStatus.textContent = 'Not Logged In';
+                    marketDataStatus.className = 'px-2 py-1 text-xs rounded bg-red-200 text-red-800';
+                }
+                
+                // Update interactive status
+                if (data.interactive_api === 'logged_in') {
+                    interactiveStatus.textContent = 'Logged In';
+                    interactiveStatus.className = 'px-2 py-1 text-xs rounded bg-green-200 text-green-800';
+                } else {
+                    interactiveStatus.textContent = 'Not Logged In';
+                    interactiveStatus.className = 'px-2 py-1 text-xs rounded bg-red-200 text-red-800';
+                }
+                
+                // Disable/enable buy/sell buttons based on interactive login status
+                const buyButtons = document.querySelectorAll('.buy-btn');
+                const sellButtons = document.querySelectorAll('.sell-btn');
+                
+                const isInteractiveLoggedIn = data.interactive_api === 'logged_in';
+                
+                buyButtons.forEach(button => {
+                    button.disabled = !isInteractiveLoggedIn;
+                    if (!isInteractiveLoggedIn) {
+                        button.title = 'Please login to Interactive API first';
+                        button.className = 'bg-gray-400 text-white px-2 py-1 rounded cursor-not-allowed';
+                    } else {
+                        button.title = '';
+                        button.className = 'bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded';
+                    }
+                });
+                
+                sellButtons.forEach(button => {
+                    button.disabled = !isInteractiveLoggedIn;
+                    if (!isInteractiveLoggedIn) {
+                        button.title = 'Please login to Interactive API first';
+                        button.className = 'bg-gray-400 text-white px-2 py-1 rounded cursor-not-allowed';
+                    } else {
+                        button.title = '';
+                        button.className = 'bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded';
+                    }
+                });
+                
+            } catch (error) {
+                console.error('Error checking login status:', error);
+            }
         }
 
         async function fetchAndRenderSelectedStrikes() {
@@ -134,18 +210,106 @@
                         <span class="font-mono">${strike.strike}</span>
                         <span class="font-mono">${strike.optiontype}</span>
                         <span class="font-mono">${strike.expiry}</span>
+                        <span class="font-mono text-green-600">₹${strike.optionltp || 'N/A'}</span>
                     </div>
                     <div class="flex items-center space-x-2">
-                        <button class="bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded buy-btn">Buy</button>
-                        <button class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded sell-btn">Sell</button>
+                        <button class="bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded buy-btn" 
+                                data-symbol="${strike.symbol}" 
+                                data-strike="${strike.strike}" 
+                                data-optiontype="${strike.optiontype}" 
+                                data-unique-key="${strike.unique_key}">Buy</button>
+                        <button class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded sell-btn" 
+                                data-symbol="${strike.symbol}" 
+                                data-strike="${strike.strike}" 
+                                data-optiontype="${strike.optiontype}" 
+                                data-unique-key="${strike.unique_key}">Sell</button>
                     </div>
                 `;
                 // Add event listeners for Buy/Sell
-                row.querySelector('.buy-btn').onclick = () => {
-                    appendLog(`[ACTION] BUY clicked for ${strike.symbol} ${strike.strike} ${strike.optiontype} ${strike.expiry}`);
+                row.querySelector('.buy-btn').onclick = async () => {
+                    const button = row.querySelector('.buy-btn');
+                    
+                    // Check if button is disabled (not logged in)
+                    if (button.disabled) {
+                        appendLog(`[ERROR] Please login to Interactive API first before placing orders`);
+                        return;
+                    }
+                    
+                    const symbol = button.getAttribute('data-symbol');
+                    const strike = button.getAttribute('data-strike');
+                    const optiontype = button.getAttribute('data-optiontype');
+                    const uniqueKey = button.getAttribute('data-unique-key');
+                    
+                    appendLog(`[ACTION] BUY clicked for ${symbol} ${strike} ${optiontype}`);
+                    
+                    try {
+                        const response = await fetch('/api/place_order', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                symbol: symbol,
+                                strike: strike,
+                                optiontype: optiontype,
+                                order_side: "BUY",
+                                unique_key: uniqueKey
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        if (result.status === 'success') {
+                            appendLog(`[SUCCESS] BUY order placed: ${result.message}`);
+                            appendLog(`[ORDER] Quantity: ${result.order_details.quantity}, Price: ₹${result.order_details.price}`);
+                        } else {
+                            appendLog(`[ERROR] BUY order failed: ${result.message}`);
+                        }
+                    } catch (error) {
+                        appendLog(`[ERROR] Failed to place BUY order: ${error.message}`);
+                    }
                 };
-                row.querySelector('.sell-btn').onclick = () => {
-                    appendLog(`[ACTION] SELL clicked for ${strike.symbol} ${strike.strike} ${strike.optiontype} ${strike.expiry}`);
+                
+                row.querySelector('.sell-btn').onclick = async () => {
+                    const button = row.querySelector('.sell-btn');
+                    
+                    // Check if button is disabled (not logged in)
+                    if (button.disabled) {
+                        appendLog(`[ERROR] Please login to Interactive API first before placing orders`);
+                        return;
+                    }
+                    
+                    const symbol = button.getAttribute('data-symbol');
+                    const strike = button.getAttribute('data-strike');
+                    const optiontype = button.getAttribute('data-optiontype');
+                    const uniqueKey = button.getAttribute('data-unique-key');
+                    
+                    appendLog(`[ACTION] SELL clicked for ${symbol} ${strike} ${optiontype}`);
+                    
+                    try {
+                        const response = await fetch('/api/place_order', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                symbol: symbol,
+                                strike: strike,
+                                optiontype: optiontype,
+                                order_side: "SELL",
+                                unique_key: uniqueKey
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        if (result.status === 'success') {
+                            appendLog(`[SUCCESS] SELL order placed: ${result.message}`);
+                            appendLog(`[ORDER] Quantity: ${result.order_details.quantity}, Price: ₹${result.order_details.price}`);
+                        } else {
+                            appendLog(`[ERROR] SELL order failed: ${result.message}`);
+                        }
+                    } catch (error) {
+                        appendLog(`[ERROR] Failed to place SELL order: ${error.message}`);
+                    }
                 };
                 listDiv.appendChild(row);
             });
@@ -163,6 +327,7 @@
             try {
                 const response = await fetch('/api/login_marketdata', { method: 'POST' });
                 await refreshLogsAndStatus();
+                await checkLoginStatus();
             } catch (error) {
                 appendLog('Error logging into Market Data API: ' + error.message);
             }
@@ -172,6 +337,7 @@
             try {
                 const response = await fetch('/api/login_interactive', { method: 'POST' });
                 await refreshLogsAndStatus();
+                await checkLoginStatus();
             } catch (error) {
                 appendLog('Error logging into Interactive API: ' + error.message);
             }
