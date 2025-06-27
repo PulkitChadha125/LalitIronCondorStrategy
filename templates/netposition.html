@@ -170,14 +170,14 @@
         let positionsData = [];
         document.addEventListener('DOMContentLoaded', function() {
             refreshPositions();
-            setInterval(refreshPositions, 30000);
+            setInterval(refreshPositions, 2000);
         });
         async function refreshPositions() {
             try {
                 const response = await fetch('/api/positions');
                 const data = await response.json();
                 if (data.status === 'success') {
-                    positionsData = (data.positions || []).filter(pos => pos.status === 'ACTIVE');
+                    positionsData = data.positions || [];
                     updatePositionsTable();
                 } else {
                     showError('Failed to fetch positions: ' + data.message);
@@ -199,22 +199,28 @@
                     <thead>
                         <tr>
                             <th>Symbol</th>
-                            <th>Strike</th>
-                            <th>Type</th>
                             <th>Quantity</th>
-                            <th>P&L</th>
+                            <th>Net Amount</th>
+                            <th>Realized MTM</th>
+                            <th>Unrealized MTM</th>
+                            <th>Total MTM</th>
+                            <th>Product Type</th>
+                            <th>Instrument ID</th>
                             <th>Action</th>
                         </tr>
                     </thead>
                     <tbody>
                         ${positionsData.map((pos, index) => `
                             <tr>
-                                <td>${pos.symbol}</td>
-                                <td>${pos.strike}</td>
-                                <td>${pos.optionType}</td>
-                                <td>${pos.quantity}</td>
-                                <td class="${pos.pnl > 0 ? 'pnl-positive' : pos.pnl < 0 ? 'pnl-negative' : ''}">₹${pos.pnl?.toFixed(2) || '0.00'}</td>
-                                <td><button class="exit-btn" onclick="exitPosition('${pos.id}')">Exit</button></td>
+                                <td>${pos.symbol || 'N/A'}</td>
+                                <td class="${parseInt(pos.quantity) > 0 ? 'pnl-positive' : parseInt(pos.quantity) < 0 ? 'pnl-negative' : ''}">${pos.quantity || '0'}</td>
+                                <td class="${parseFloat(pos.netAmount) > 0 ? 'pnl-positive' : parseFloat(pos.netAmount) < 0 ? 'pnl-negative' : ''}">₹${pos.netAmount || '0.00'}</td>
+                                <td class="${parseFloat(pos.realizedMTM) > 0 ? 'pnl-positive' : parseFloat(pos.realizedMTM) < 0 ? 'pnl-negative' : ''}">₹${pos.realizedMTM || '0.00'}</td>
+                                <td class="${parseFloat(pos.unrealizedMTM) > 0 ? 'pnl-positive' : parseFloat(pos.unrealizedMTM) < 0 ? 'pnl-negative' : ''}">₹${pos.unrealizedMTM || '0.00'}</td>
+                                <td class="${parseFloat(pos.mtm) > 0 ? 'pnl-positive' : parseFloat(pos.mtm) < 0 ? 'pnl-negative' : ''}">₹${pos.mtm || '0.00'}</td>
+                                <td>${pos.productType || 'N/A'}</td>
+                                <td>${pos.exchangeInstrumentId || 'N/A'}</td>
+                                <td><button class="exit-btn" onclick="exitPosition('${pos.exchangeInstrumentId}', '${pos.quantity}', '${pos.symbol}')">Exit</button></td>
                             </tr>
                         `).join('')}
                     </tbody>
@@ -222,17 +228,29 @@
             `;
             tableContainer.innerHTML = table;
         }
-        async function exitPosition(positionId) {
-            if (!confirm('Are you sure you want to exit this position?')) return;
+        async function exitPosition(instrumentId, quantity, symbol) {
+            if (!confirm(`Are you sure you want to exit this position?\nSymbol: ${symbol}\nQuantity: ${quantity}`)) return;
+            
             try {
-                const response = await fetch('/api/close_position', {
+                // Determine order side based on quantity
+                const orderSide = parseInt(quantity) > 0 ? 'SELL' : 'BUY';
+                const orderQuantity = Math.abs(parseInt(quantity));
+                
+                const response = await fetch('/api/exit_position', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ position_id: positionId })
+                    body: JSON.stringify({
+                        instrument_id: instrumentId,
+                        order_quantity: orderQuantity,
+                        order_side: orderSide,
+                        price: 0, // Market order
+                        symbol: symbol
+                    })
                 });
+                
                 const data = await response.json();
                 if (data.status === 'success') {
-                    showSuccess('Position exited successfully');
+                    showSuccess(`Position exit order placed successfully! ${orderSide} ${orderQuantity} ${symbol}`);
                     refreshPositions();
                 } else {
                     showError('Failed to exit position: ' + data.message);
@@ -243,14 +261,47 @@
         }
         async function squareOffAll() {
             if (!confirm('Are you sure you want to square off all positions?')) return;
+            
             try {
-                const response = await fetch('/api/close_all_positions', { method: 'POST' });
-                const data = await response.json();
-                if (data.status === 'success') {
-                    showSuccess('All positions squared off successfully');
+                let successCount = 0;
+                let errorCount = 0;
+                
+                for (const pos of positionsData) {
+                    try {
+                        // Determine order side based on quantity
+                        const orderSide = parseInt(pos.quantity) > 0 ? 'SELL' : 'BUY';
+                        const orderQuantity = Math.abs(parseInt(pos.quantity));
+                        
+                        const response = await fetch('/api/exit_position', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                instrument_id: pos.exchangeInstrumentId,
+                                order_quantity: orderQuantity,
+                                order_side: orderSide,
+                                price: 0, // Market order
+                                symbol: pos.symbol
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        if (data.status === 'success') {
+                            successCount++;
+                        } else {
+                            errorCount++;
+                            console.error(`Failed to exit ${pos.symbol}: ${data.message}`);
+                        }
+                    } catch (error) {
+                        errorCount++;
+                        console.error(`Error exiting ${pos.symbol}: ${error.message}`);
+                    }
+                }
+                
+                if (successCount > 0) {
+                    showSuccess(`Square off completed! ${successCount} orders placed successfully${errorCount > 0 ? `, ${errorCount} failed` : ''}`);
                     refreshPositions();
                 } else {
-                    showError('Failed to square off all positions: ' + data.message);
+                    showError('Failed to place any exit orders');
                 }
             } catch (error) {
                 showError('Error squaring off all positions: ' + error.message);

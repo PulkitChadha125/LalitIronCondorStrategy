@@ -9,11 +9,18 @@ import sys
 sys.path.append('.')
 # Now import the SDK
 from xtspythonclientapisdk.Connect import XTSConnect
+import threading
 
 xts_marketdata = None
 xt=None
 Future_instrument_id_list=[]
 Equity_instrument_id_list=[]
+
+# Global variable to store running positions
+running_positions = []
+
+# Global variable to store net positions
+net_positions = []
 
 def get_result_dict():
     global result_dict
@@ -86,8 +93,13 @@ def interactivelogin():
     try:
         response = xt.interactive_login()
         print("Interactive Login Response:", response)
-        if response and 'result' in response:
+        if response and 'result' in response and 'token' in response['result']:
             print("Interactive login successful")
+            
+            # Start the net position fetcher thread
+            from main import start_net_position_fetcher
+            start_net_position_fetcher()
+            
             return xt
         else:
             print("Interactive login failed: ", response)
@@ -297,6 +309,11 @@ def login_interactive_api():
         
         if response and 'result' in response and 'token' in response['result']:
             print("Interactive login successful")
+            
+            # Start the net position fetcher thread
+            from main import start_net_position_fetcher
+            start_net_position_fetcher()
+            
             return xt
         else:
             print("Interactive login failed: ", response)
@@ -845,6 +862,96 @@ def select_pe_strikes(params):
                 }
     print(f"[INFO] No matching PE strikes found within {allowed_percentage}% to {allowed_percentage + 2}% range")
     return None
+
+def fetch_net_positions():
+    """
+    Fetch net positions from XTS API and update the global net_positions list.
+    This function is called every 2 seconds in a background thread.
+    """
+    global net_positions, xt
+    try:
+        if xt:
+            # For dealer accounts, we need to pass clientID
+            # From the login response, we can see clientCodes: ['CLI4342']
+            response = xt.get_position_netwise(clientID="CLI4342")
+            print("response", response)
+            if response and response.get('type') == 'success':
+                # Extract positionList from the response structure
+                result = response.get('result', {})
+                positions_data = result.get('positionList', [])
+                
+                # Filter out empty/zero values
+                valid_positions = []
+                for pos in positions_data:
+                    if pos and pos != 0 and pos != "" and isinstance(pos, dict):
+                        valid_positions.append(pos)
+                
+                net_positions = valid_positions
+                print(f"[NET POSITION] Fetched {len(positions_data)} total positions, {len(valid_positions)} valid positions at {datetime.datetime.now().strftime('%H:%M:%S')}")
+                
+                # Debug: Print the structure of the first valid position
+                if valid_positions and len(valid_positions) > 0:
+                    print(f"[NET POSITION] Sample position structure: {valid_positions[0]}")
+                else:
+                    print("[NET POSITION] No valid positions found (this is normal if you have no open positions)")
+            else:
+                print(f"[NET POSITION] Error fetching net positions: {response}")
+        else:
+            print("[NET POSITION] Interactive API not logged in")
+    except Exception as e:
+        print(f"[NET POSITION] Exception while fetching net positions: {str(e)}")
+
+def start_net_position_fetcher():
+    """
+    Start a background thread that fetches net positions every 2 seconds.
+    This function should be called after successful interactive login.
+    """
+    def net_position_worker():
+        print("[NET POSITION] Starting net position fetcher thread...")
+        while True:
+            try:
+                fetch_net_positions()
+                time.sleep(2)  # Wait 2 seconds before next fetch
+            except Exception as e:
+                print(f"[NET POSITION] Error in net position worker: {str(e)}")
+                time.sleep(2)  # Continue trying even if there's an error
+    
+    # Start the background thread
+    net_position_thread = threading.Thread(target=net_position_worker, daemon=True)
+    net_position_thread.start()
+    print("[NET POSITION] Net position fetcher thread started successfully")
+
+def get_net_positions():
+    """
+    Return the latest net positions for the net position panel.
+    Extracts and returns: Symbol, Quantity, NetAmount, RealizedMTM, UnrealizedMTM, MTM, ProductType, ExchangeInstrumentId.
+    """
+    global net_positions
+    result = []
+    
+    # net_positions is now a list of dicts from response['result']['positionList']
+    for pos in net_positions:
+        try:
+            # Only process dicts
+            if not isinstance(pos, dict):
+                continue
+            result.append({
+                'symbol': pos.get('TradingSymbol', ''),
+                'quantity': pos.get('Quantity', '0'),
+                'netAmount': pos.get('NetAmount', ''),
+                'realizedMTM': pos.get('RealizedMTM', ''),
+                'unrealizedMTM': pos.get('UnrealizedMTM', ''),
+                'mtm': pos.get('MTM', ''),
+                'productType': pos.get('ProductType', ''),
+                'exchangeInstrumentId': pos.get('ExchangeInstrumentId', ''),
+            })
+        except Exception as e:
+            print('[NET POSITION] Error extracting fields:', e)
+    return result
+
+# --- USAGE EXAMPLE ---
+# After successful login, call:
+# start_net_position_fetcher()
 
 if __name__ == "__main__":
     # # Initialize settings and credentials

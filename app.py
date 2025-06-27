@@ -392,61 +392,14 @@ def netposition():
 
 @app.route('/api/positions', methods=['GET'])
 def get_positions():
-    """API endpoint to get all positions"""
+    """Get current positions from the net position fetcher"""
     try:
-        from main import xt
-        
-        if not xt or not xt.token:
-            return jsonify({"status": "error", "message": "Interactive API not logged in"})
-        
-        # Get positions from XTS API
-        response = xt.get_positions()
-        
-        if response.get('type') == 'success':
-            positions = response.get('result', [])
-            
-            # Transform positions data for frontend
-            transformed_positions = []
-            for pos in positions:
-                # Calculate P&L
-                avg_price = pos.get('AveragePrice', 0)
-                ltp = pos.get('LastTradedPrice', 0)
-                quantity = pos.get('Quantity', 0)
-                
-                # P&L calculation (simplified)
-                pnl = (ltp - avg_price) * quantity if pos.get('OrderSide') == 'BUY' else (avg_price - ltp) * quantity
-                day_pnl = pnl  # For now, using same as total P&L
-                
-                transformed_positions.append({
-                    'id': pos.get('PositionID'),
-                    'symbol': pos.get('ScripName', ''),
-                    'strike': pos.get('StrikePrice', ''),
-                    'optionType': pos.get('OptionType', ''),
-                    'quantity': quantity,
-                    'avgPrice': avg_price,
-                    'ltp': ltp,
-                    'pnl': pnl,
-                    'dayPnl': day_pnl,
-                    'status': 'ACTIVE' if quantity > 0 else 'CLOSED',
-                    'openDate': pos.get('TradeDate', ''),
-                    'closeDate': pos.get('CloseDate', ''),
-                    'orderSide': pos.get('OrderSide', ''),
-                    'exchangeSegment': pos.get('ExchangeSegment', '')
-                })
-            
-            return jsonify({
-                "status": "success",
-                "positions": transformed_positions
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": f"Failed to fetch positions: {response.get('description', 'Unknown error')}"
-            })
-            
+        from main import get_net_positions
+        positions = get_net_positions()
+        return jsonify({"status": "success", "positions": positions})
     except Exception as e:
-        log_message(f"[ERROR] Failed to get positions: {str(e)}")
-        return jsonify({"status": "error", "message": f"Failed to get positions: {str(e)}"})
+        log_message(f"Error getting positions: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/api/close_position', methods=['POST'])
 def close_position():
@@ -649,6 +602,56 @@ def get_position_history():
     except Exception as e:
         log_message(f"[ERROR] Failed to get position history: {str(e)}")
         return jsonify({"status": "error", "message": f"Failed to get position history: {str(e)}"})
+
+@app.route('/api/exit_position', methods=['POST'])
+def exit_position_api():
+    """API endpoint to exit positions from net position panel"""
+    try:
+        from main import xt, place_order
+        
+        data = request.get_json()
+        instrument_id = data.get("instrument_id")
+        order_quantity = data.get("order_quantity")
+        order_side = data.get("order_side")  # "BUY" or "SELL"
+        price = data.get("price", 0)  # Market order if 0
+        symbol = data.get("symbol", "")
+        
+        if not all([instrument_id, order_quantity, order_side]):
+            return jsonify({"status": "error", "message": "Missing required parameters: instrument_id, order_quantity, order_side"})
+        
+        # Check if interactive API is logged in
+        if not xt or not xt.token:
+            return jsonify({"status": "error", "message": "Interactive API not logged in. Please login first."})
+        
+        # Place the exit order
+        response = place_order(
+            nfo_ins_id=instrument_id,
+            order_quantity=order_quantity,
+            order_side=order_side,
+            price=price,
+            unique_key=f"exit_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        
+        log_message(f"[EXIT ORDER] {order_side} order placed for {symbol}")
+        log_message(f"[EXIT ORDER] Quantity: {order_quantity}, Price: {price}, Response: {response}")
+        
+        return jsonify({
+            "status": "success", 
+            "message": f"{order_side} exit order placed successfully",
+            "order_details": {
+                "symbol": symbol,
+                "order_side": order_side,
+                "quantity": order_quantity,
+                "price": price,
+                "response": response
+            }
+        })
+        
+    except Exception as e:
+        log_message(f"[ERROR] Failed to place exit order: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Failed to place exit order: {str(e)}"})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000) 
