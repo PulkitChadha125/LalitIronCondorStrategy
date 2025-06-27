@@ -11,7 +11,7 @@ import json
 import logging
 import requests
 from urllib import parse
-import Exception as ex
+from . import Exception as ex
 log = logging.getLogger(__name__)
 
 

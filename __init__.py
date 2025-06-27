@@ -26,7 +26,7 @@ for the complete list of APIs, supported parameters and values, and response for
 
 # from __future__ import unicode_literals, absolute_import
 
-from XTConnect import Exception
-from XTConnect.Connect import XTSConnect
+from . import Exception
+from .Connect import XTSConnect
 
-__all__ = ["XTConnect", "Exception"]
+__all__ = ["XTSConnect", "Exception"]
