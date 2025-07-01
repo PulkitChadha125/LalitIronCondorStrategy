@@ -213,6 +213,7 @@
                         <span class="font-mono text-green-600">₹${strike.optionltp || 'N/A'}</span>
                     </div>
                     <div class="flex items-center space-x-2">
+                        <input type="number" class="order-price-input border rounded px-2 py-1 w-24 ml-4" placeholder="Order Price" min="0" step="0.01" />
                         <button class="bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded buy-btn" 
                                 data-symbol="${strike.symbol}" 
                                 data-strike="${strike.strike}" 
@@ -226,22 +227,19 @@
                     </div>
                 `;
                 // Add event listeners for Buy/Sell
+                const priceInput = row.querySelector('.order-price-input');
                 row.querySelector('.buy-btn').onclick = async () => {
                     const button = row.querySelector('.buy-btn');
-                    
-                    // Check if button is disabled (not logged in)
                     if (button.disabled) {
                         appendLog(`[ERROR] Please login to Interactive API first before placing orders`);
                         return;
                     }
-                    
                     const symbol = button.getAttribute('data-symbol');
                     const strike = button.getAttribute('data-strike');
                     const optiontype = button.getAttribute('data-optiontype');
                     const uniqueKey = button.getAttribute('data-unique-key');
-                    
-                    appendLog(`[ACTION] BUY clicked for ${symbol} ${strike} ${optiontype}`);
-                    
+                    const orderPrice = priceInput.value;
+                    appendLog(`[ACTION] BUY clicked for ${symbol} ${strike} ${optiontype} at price ${orderPrice}`);
                     try {
                         const response = await fetch('/api/place_order', {
                             method: 'POST',
@@ -253,10 +251,10 @@
                                 strike: strike,
                                 optiontype: optiontype,
                                 order_side: "BUY",
-                                unique_key: uniqueKey
+                                unique_key: uniqueKey,
+                                price: orderPrice
                             })
                         });
-                        
                         const result = await response.json();
                         if (result.status === 'success') {
                             appendLog(`[SUCCESS] BUY order placed: ${result.message}`);
@@ -268,23 +266,18 @@
                         appendLog(`[ERROR] Failed to place BUY order: ${error.message}`);
                     }
                 };
-                
                 row.querySelector('.sell-btn').onclick = async () => {
                     const button = row.querySelector('.sell-btn');
-                    
-                    // Check if button is disabled (not logged in)
                     if (button.disabled) {
                         appendLog(`[ERROR] Please login to Interactive API first before placing orders`);
                         return;
                     }
-                    
                     const symbol = button.getAttribute('data-symbol');
                     const strike = button.getAttribute('data-strike');
                     const optiontype = button.getAttribute('data-optiontype');
                     const uniqueKey = button.getAttribute('data-unique-key');
-                    
-                    appendLog(`[ACTION] SELL clicked for ${symbol} ${strike} ${optiontype}`);
-                    
+                    const orderPrice = priceInput.value;
+                    appendLog(`[ACTION] SELL clicked for ${symbol} ${strike} ${optiontype} at price ${orderPrice}`);
                     try {
                         const response = await fetch('/api/place_order', {
                             method: 'POST',
@@ -296,10 +289,10 @@
                                 strike: strike,
                                 optiontype: optiontype,
                                 order_side: "SELL",
-                                unique_key: uniqueKey
+                                unique_key: uniqueKey,
+                                price: orderPrice
                             })
                         });
-                        
                         const result = await response.json();
                         if (result.status === 'success') {
                             appendLog(`[SUCCESS] SELL order placed: ${result.message}`);

@@ -133,7 +133,7 @@ def place_order(nfo_ins_id,order_quantity,order_side,price,unique_key):
         exchangeSegment=xt.EXCHANGE_NSEFO,
         exchangeInstrumentID=nfo_ins_id,
         productType=xt.PRODUCT_MIS,
-        orderType=xt.ORDER_TYPE_MARKET,
+        orderType=xt.ORDER_TYPE_LIMIT,
         orderSide=val,
         timeInForce=xt.VALIDITY_DAY,
         disclosedQuantity=0,
@@ -737,6 +737,7 @@ def Option_MarketQuote(xts_marketdata):
             
             if response and response.get("type") == "success":
                 quote_strings = response["result"].get("listQuotes", [])
+                
                 
                 for quote_str in quote_strings:
                     try:

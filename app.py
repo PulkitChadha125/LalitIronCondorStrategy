@@ -282,6 +282,7 @@ def place_order_api():
         optiontype = data.get("optiontype")
         order_side = data.get("order_side")  # "BUY" or "SELL"
         unique_key = data.get("unique_key")
+        price = data.get("price")
         
         if not all([symbol, strike, optiontype, order_side, unique_key]):
             return jsonify({"status": "error", "message": "Missing required parameters"})
@@ -333,17 +334,24 @@ def place_order_api():
         if not xt or not xt.token:
             return jsonify({"status": "error", "message": "Interactive API not logged in. Please login first."})
         
+        # Use the provided price if given, else fallback to optionltp
+        order_price = None
+        try:
+            order_price = float(price) if price not in (None, "") else float(optionltp)
+        except Exception:
+            order_price = float(optionltp)
+        
         # Place the order
         response = place_order(
             nfo_ins_id=instrument_id,
             order_quantity=order_quantity,
             order_side=order_side,
-            price=optionltp,
+            price=order_price,
             unique_key=unique_key
         )
         
         log_message(f"[ORDER] {order_side} order placed for {symbol} {strike} {optiontype}")
-        log_message(f"[ORDER] Quantity: {order_quantity}, Price: {optionltp}, Response: {response}")
+        log_message(f"[ORDER] Quantity: {order_quantity}, Price: {order_price}, Response: {response}")
         
         return jsonify({
             "status": "success", 
@@ -354,7 +362,7 @@ def place_order_api():
                 "optiontype": optiontype,
                 "order_side": order_side,
                 "quantity": order_quantity,
-                "price": optionltp,
+                "price": order_price,
                 "response": response
             }
         })
