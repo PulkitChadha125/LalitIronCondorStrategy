@@ -538,45 +538,7 @@ def Future_MarketQuote(xts_marketdata):
             print(f"[ERROR] While fetching quote chunk: {e}")
             traceback.print_exc()
     
-    # After all LTPs are fetched and strike ranges calculated, fetch option instrument IDs
-    print("[INFO] Fetching option instrument IDs for all strikes...")
-    fetch_option_instrument_ids(xts_marketdata)
-    
-    # After fetching option instrument IDs, fetch option LTPs
-    print("[INFO] Fetching option LTPs for all strikes...")
-    Option_MarketQuote(xts_marketdata)
-    
-    # After fetching option LTPs, select CE strikes based on criteria
-    print("[INFO] Selecting CE strikes based on premium difference...")
-    for unique_key, params in result_dict.items():
-        symbol = params.get("Symbol")
-        option_type = params.get("OptionType")
-        if option_type == "CE":
-            print(f"[INFO] Processing CE strikes for {symbol}")
-            selected_strikes = select_ce_strikes(params)
-            if selected_strikes:
-                params["optionselectedstrike_CE"] = selected_strikes
-                print(f"[SUCCESS] Selected CE strikes for {symbol}: {list(selected_strikes.keys())}")
-            else:
-                print(f"[WARN] No suitable CE strikes found for {symbol}")
-                params["optionselectedstrike_CE"] = None
-        elif option_type == "PE":
-            print(f"[INFO] Processing PE strikes for {symbol}")
-            selected_strikes = select_pe_strikes(params)
-            if selected_strikes:
-                params["optionselectedstrike_PE"] = selected_strikes
-                print(f"[SUCCESS] Selected PE strikes for {symbol}: {list(selected_strikes.keys())}")
-            else:
-                print(f"[WARN] No suitable PE strikes found for {symbol}")
-                params["optionselectedstrike_PE"] = None
-        else:
-            print(f"[INFO] Skipping {symbol} - Option type is {option_type} (CE/PE processing only)")
-            params["optionselectedstrike_CE"] = None
-            params["optionselectedstrike_PE"] = None
-    # Debug: print all selected strikes for all symbols
-    print("[DEBUG] Final selected_strike summary:")
-    for unique_key, params in result_dict.items():
-        print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike_CE') or params.get('optionselectedstrike_PE')}")
+    print("[INFO] Future LTP fetch and strike range calculation completed.")
 
 
 
@@ -596,15 +558,23 @@ def main_strategy():
         print(f"\nStarting main strategy at {datetime.datetime.now()}")
         
         # Step 1: Fetch Future LTPs and calculate strike ranges
+        print("[STEP 1] Fetching Future LTPs and calculating strike ranges...")
         Future_MarketQuote(xts_marketdata)
         
-        # Step 2: Fetch option instrument IDs for all strikes
-        fetch_option_instrument_ids(xts_marketdata)
+        # Step 2: Fetch ALL option instrument IDs for all strikes (individual calls)
+        print("[STEP 2] Fetching ALL option instrument IDs...")
+        instrument_ids_fetched = fetch_option_instrument_ids(xts_marketdata)
         
-        # Step 3: Fetch option LTPs for all strikes
+        if not instrument_ids_fetched:
+            print("[ERROR] No instrument IDs were fetched successfully. Cannot proceed to LTP fetch.")
+            return
+        
+        # Step 3: Fetch ALL option LTPs in batches (optimized)
+        print("[STEP 3] Fetching ALL option LTPs in batches...")
         Option_MarketQuote(xts_marketdata)
         
         # Step 4: Select strikes based on criteria
+        print("[STEP 4] Selecting strikes based on criteria...")
         for unique_key, params in result_dict.items():
             symbol = params.get("Symbol")
             option_type = params.get("OptionType")
@@ -634,6 +604,8 @@ def main_strategy():
         for unique_key, params in result_dict.items():
             print(f"{params.get('Symbol')} ({params.get('OptionType')}): {params.get('optionselectedstrike_CE') or params.get('optionselectedstrike_PE')}")
             
+        print(f"\nMain strategy completed at {datetime.datetime.now()}")
+            
     except Exception as e:
         print("Error in main strategy:", str(e))
         traceback.print_exc()
@@ -642,8 +614,15 @@ def fetch_option_instrument_ids(xts_marketdata):
     """
     Fetch option instrument IDs for all strikes in the Optionchain for all symbols.
     This function should be called after Future_MarketQuote has calculated the strike ranges.
+    Optimized to fetch all instrument IDs first, then proceed to LTP fetching.
     """
     global result_dict
+    
+    print(f"[INFO] Starting option instrument ID fetch for {len(result_dict)} symbols")
+    
+    total_strikes = 0
+    successful_fetches = 0
+    failed_fetches = 0
     
     for unique_key, params in result_dict.items():
         symbol = params.get("Symbol")
@@ -658,7 +637,9 @@ def fetch_option_instrument_ids(xts_marketdata):
         # Convert expiry to API format: DDMonYYYY (e.g., 29May2025)
         expiry_api_format = datetime.datetime.strptime(expiry, "%d-%m-%Y").strftime("%d%b%Y")
         
-        print(f"[INFO] Fetching option instrument IDs for {symbol} with {len(optionchain)} strikes")
+        strikes_count = len(optionchain)
+        total_strikes += strikes_count
+        print(f"[INFO] Fetching {strikes_count} option instrument IDs for {symbol} ({option_type})")
         
         # Fetch instrument ID for each strike
         for strike_price in optionchain.keys():
@@ -675,17 +656,30 @@ def fetch_option_instrument_ids(xts_marketdata):
                 if opt_response['type'] == 'success' and 'result' in opt_response and opt_response['result']:
                     instrument_id = int(opt_response['result'][0]['ExchangeInstrumentID'])
                     optionchain[strike_price]['instrument_id'] = instrument_id
+                    successful_fetches += 1
                     print(f"[SUCCESS] {symbol} Strike {strike_price}: Instrument ID = {instrument_id}")
                 else:
                     print(f"[ERROR] Could not get option instrument ID for {symbol} Strike {strike_price}")
                     optionchain[strike_price]['instrument_id'] = None
+                    failed_fetches += 1
                     
             except Exception as e:
                 print(f"[ERROR] Exception while fetching option instrument ID for {symbol} Strike {strike_price}: {str(e)}")
                 optionchain[strike_price]['instrument_id'] = None
+                failed_fetches += 1
                 
         # Update the result_dict with the modified optionchain
         result_dict[unique_key] = params
+    
+    print(f"[SUMMARY] Instrument ID Fetch Complete:")
+    print(f"  Total strikes processed: {total_strikes}")
+    print(f"  Successful fetches: {successful_fetches}")
+    print(f"  Failed fetches: {failed_fetches}")
+    print(f"  Success rate: {(successful_fetches/total_strikes*100):.1f}%" if total_strikes > 0 else "  No strikes to process")
+    
+    # Now that all instrument IDs are fetched, we can proceed to LTP fetching
+    print(f"[INFO] All instrument IDs fetched. Proceeding to LTP fetch...")
+    return successful_fetches > 0  # Return True if we have at least some successful fetches
 
 def Option_MarketQuote(xts_marketdata):
     """
@@ -693,6 +687,8 @@ def Option_MarketQuote(xts_marketdata):
     Process in chunks of 25 instrument IDs at a time as per API limitation.
     """
     global result_dict
+    
+    print(f"[INFO] Starting option LTP fetch for {len(result_dict)} symbols")
     
     # Collect all option instrument IDs from all symbols
     option_instrument_id_list = []
@@ -724,11 +720,22 @@ def Option_MarketQuote(xts_marketdata):
         print("[WARN] No option instrument IDs found to fetch quotes")
         return
     
-    print(f"[INFO] Fetching option LTPs for {len(option_instrument_id_list)} instruments")
+    total_instruments = len(option_instrument_id_list)
+    print(f"[INFO] Found {total_instruments} option instruments to fetch LTPs")
+    
+    # Calculate number of chunks
+    chunk_size = 25
+    num_chunks = (total_instruments + chunk_size - 1) // chunk_size
+    print(f"[INFO] Will process in {num_chunks} chunks of {chunk_size} instruments each")
+    
+    successful_ltps = 0
+    failed_ltps = 0
     
     # Process in chunks of 25
-    for chunk in chunk_instruments(option_instrument_id_list, 25):
+    for chunk_index, chunk in enumerate(chunk_instruments(option_instrument_id_list, chunk_size), 1):
         try:
+            print(f"[INFO] Processing chunk {chunk_index}/{num_chunks} ({len(chunk)} instruments)")
+            
             response = xts_marketdata.get_quote(
                 Instruments=chunk,
                 xtsMessageCode=1501,
@@ -737,7 +744,6 @@ def Option_MarketQuote(xts_marketdata):
             
             if response and response.get("type") == "success":
                 quote_strings = response["result"].get("listQuotes", [])
-                
                 
                 for quote_str in quote_strings:
                     try:
@@ -754,21 +760,33 @@ def Option_MarketQuote(xts_marketdata):
                             # Update the optionchain with LTP
                             if unique_key in result_dict:
                                 result_dict[unique_key]["Optionchain"][strike_price]["optionltp"] = float(ltp) if ltp else None
+                                successful_ltps += 1
                                 print(f"[SUCCESS] {symbol} Strike {strike_price}: LTP = {ltp}")
                             else:
                                 print(f"[ERROR] Unique key {unique_key} not found in result_dict")
+                                failed_ltps += 1
                         else:
                             print(f"[WARN] Instrument ID {instrument_id} not found in mapping")
+                            failed_ltps += 1
                             
                     except Exception as inner_err:
                         print(f"[WARN] Skipping malformed quote: {inner_err}")
+                        failed_ltps += 1
                         continue
             else:
                 print(f"[ERROR] Unexpected quote response: {response}")
+                failed_ltps += len(chunk)
                 
         except Exception as e:
-            print(f"[ERROR] While fetching option quote chunk: {e}")
+            print(f"[ERROR] While fetching option quote chunk {chunk_index}: {e}")
+            failed_ltps += len(chunk)
             traceback.print_exc()
+    
+    print(f"[SUMMARY] Option LTP Fetch Complete:")
+    print(f"  Total instruments processed: {total_instruments}")
+    print(f"  Successful LTP fetches: {successful_ltps}")
+    print(f"  Failed LTP fetches: {failed_ltps}")
+    print(f"  Success rate: {(successful_ltps/total_instruments*100):.1f}%" if total_instruments > 0 else "  No instruments to process")
 
 def select_ce_strikes(params):
     """
