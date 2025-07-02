@@ -63,15 +63,28 @@
                 </button>
                 <button id="startButton" 
                         class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
-                    Start Scanner
+                    Start Scanner (All Symbols)
+                </button>
+                <button id="startIncrementalButton" 
+                        class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Start Incremental Scanner
                 </button>
                 <button id="stopButton" 
                         class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
                         disabled>
                     Stop Scanner
                 </button>
+                <button id="stopIncrementalButton" 
+                        class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+                        disabled>
+                    Stop Incremental Scanner
+                </button>
+                <button id="clearResultsButton"
+                        class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Clear Results
+                </button>
                 <button id="reloadButton"
-                        class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                        class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
                     Load Updated Settings
                 </button>
             </div>
@@ -86,15 +99,53 @@
                 <h2 class="text-lg font-semibold text-gray-700 mb-2">Selected Strikes</h2>
                 <div id="selectedStrikesList" class="bg-white rounded p-4 shadow"></div>
             </div>
+
+            <!-- Incremental Scanner Progress Section -->
+            <div id="incrementalProgressSection" class="mb-4 hidden">
+                <h2 class="text-lg font-semibold text-gray-700 mb-2">Incremental Scanner Progress</h2>
+                <div class="bg-white rounded p-4 shadow">
+                    <div class="flex items-center justify-between mb-2">
+                        <span id="incrementalStatus" class="text-sm font-medium">Processing...</span>
+                        <span id="incrementalProgress" class="text-sm text-gray-600">0 / 0 symbols</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5 mb-2">
+                        <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div id="currentSymbolInfo" class="text-sm text-gray-600">Waiting to start...</div>
+                </div>
+            </div>
+
+            <!-- Incremental Scanner Results Section -->
+            <div id="incrementalResultsSection" class="mb-4 hidden">
+                <h2 class="text-lg font-semibold text-gray-700 mb-2">Incremental Scanner Results</h2>
+                <div id="incrementalResultsList" class="bg-white rounded p-4 shadow max-h-60 overflow-y-auto">
+                    <div class="text-gray-500">No results yet...</div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
+        const startIncrementalButton = document.getElementById('startIncrementalButton');
+        const stopIncrementalButton = document.getElementById('stopIncrementalButton');
+        const clearResultsButton = document.getElementById('clearResultsButton');
         const statusIndicator = document.getElementById('statusIndicator');
         const statusText = document.getElementById('statusText');
         const logContainer = document.getElementById('logContainer');
+        
+        // Incremental scanner elements
+        const incrementalProgressSection = document.getElementById('incrementalProgressSection');
+        const incrementalResultsSection = document.getElementById('incrementalResultsSection');
+        const incrementalStatus = document.getElementById('incrementalStatus');
+        const incrementalProgress = document.getElementById('incrementalProgress');
+        const progressBar = document.getElementById('progressBar');
+        const currentSymbolInfo = document.getElementById('currentSymbolInfo');
+        const incrementalResultsList = document.getElementById('incrementalResultsList');
+        
+        let incrementalStatusInterval = null;
+        let selectedStrikesInterval = null;
 
         function updateStatus(status) {
             statusIndicator.className = 'status-indicator';
@@ -102,6 +153,148 @@
             statusText.textContent = status.charAt(0).toUpperCase() + status.slice(1);
             startButton.disabled = status === 'running' || status === 'starting';
             stopButton.disabled = status !== 'running';
+        }
+
+        function updateIncrementalStatus(status) {
+            if (status === 'running') {
+                incrementalProgressSection.classList.remove('hidden');
+                incrementalResultsSection.classList.remove('hidden');
+                startIncrementalButton.disabled = true;
+                stopIncrementalButton.disabled = false;
+                incrementalStatus.textContent = 'Processing...';
+                incrementalStatus.className = 'text-sm font-medium text-blue-600';
+            } else if (status === 'stopped') {
+                incrementalProgressSection.classList.add('hidden');
+                incrementalResultsSection.classList.add('hidden');
+                startIncrementalButton.disabled = false;
+                stopIncrementalButton.disabled = true;
+                incrementalStatus.textContent = 'Stopped';
+                incrementalStatus.className = 'text-sm font-medium text-gray-600';
+                // Clear interval if running
+                if (incrementalStatusInterval) {
+                    clearInterval(incrementalStatusInterval);
+                    incrementalStatusInterval = null;
+                }
+                // Stop auto-refresh for selected strikes
+                if (selectedStrikesInterval) {
+                    clearInterval(selectedStrikesInterval);
+                    selectedStrikesInterval = null;
+                }
+            } else if (status === 'completed') {
+                incrementalProgressSection.classList.remove('hidden');
+                incrementalResultsSection.classList.remove('hidden');
+                startIncrementalButton.disabled = false;
+                stopIncrementalButton.disabled = true;
+                incrementalStatus.textContent = 'Completed';
+                incrementalStatus.className = 'text-sm font-medium text-green-600';
+                // Clear interval if running
+                if (incrementalStatusInterval) {
+                    clearInterval(incrementalStatusInterval);
+                    incrementalStatusInterval = null;
+                }
+                // Stop auto-refresh for selected strikes
+                if (selectedStrikesInterval) {
+                    clearInterval(selectedStrikesInterval);
+                    selectedStrikesInterval = null;
+                }
+            }
+        }
+
+        async function updateIncrementalProgress() {
+            try {
+                const response = await fetch('/api/incremental_scanner_status');
+                const data = await response.json();
+                
+                const currentIndex = data.current_index || 0;
+                const totalSymbols = data.total_symbols || 0;
+                const completedSymbols = data.completed_symbols || 0;
+                const status = data.status || 'stopped';
+                const results = data.results || {};
+                
+                // Update status
+                updateIncrementalStatus(status);
+                
+                // Update progress
+                if (totalSymbols > 0) {
+                    const progressPercentage = (currentIndex / totalSymbols) * 100;
+                    progressBar.style.width = `${progressPercentage}%`;
+                    incrementalProgress.textContent = `${currentIndex} / ${totalSymbols} symbols`;
+                    
+                    // Update current symbol info
+                    if (status === 'running' && currentIndex < totalSymbols) {
+                        const symbolKeys = Object.keys(results);
+                        if (symbolKeys.length > 0) {
+                            const lastProcessedSymbol = symbolKeys[symbolKeys.length - 1];
+                            const lastResult = results[lastProcessedSymbol];
+                            if (lastResult && lastResult.symbol) {
+                                currentSymbolInfo.textContent = `Last processed: ${lastResult.symbol}`;
+                            }
+                        }
+                    } else if (status === 'completed') {
+                        currentSymbolInfo.textContent = 'All symbols processed successfully!';
+                    }
+                }
+                
+                // Update results list
+                renderIncrementalResults(results);
+                
+            } catch (error) {
+                console.error('Error updating incremental progress:', error);
+            }
+        }
+
+        function renderIncrementalResults(results) {
+            const resultsList = document.getElementById('incrementalResultsList');
+            resultsList.innerHTML = '';
+            
+            if (!results || Object.keys(results).length === 0) {
+                resultsList.innerHTML = '<div class="text-gray-500">No results yet...</div>';
+                return;
+            }
+            
+            // Add results count header
+            const resultsCount = Object.keys(results).length;
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'text-sm font-medium text-gray-700 mb-2 pb-2 border-b border-gray-200';
+            headerDiv.textContent = `Total Results: ${resultsCount} symbols`;
+            resultsList.appendChild(headerDiv);
+            
+            Object.entries(results).forEach(([uniqueKey, result]) => {
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'border-b border-gray-200 py-2 last:border-b-0';
+                
+                if (result.success) {
+                    resultDiv.innerHTML = `
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-green-500">✓</span>
+                                <span class="font-medium">${result.symbol}</span>
+                                <span class="text-sm text-gray-600">LTP: ₹${result.ltp}</span>
+                                <span class="text-sm text-gray-600">${result.option_type}</span>
+                            </div>
+                            <div class="text-sm text-gray-600">
+                                ${result.selected_strikes.length > 0 ? 
+                                    `Selected: ${result.selected_strikes.join(', ')}` : 
+                                    'No strikes selected'}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-red-500">✗</span>
+                                <span class="font-medium">${result.symbol || 'Unknown'}</span>
+                            </div>
+                            <div class="text-sm text-red-600">
+                                ${result.error || 'Unknown error'}
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                resultsList.appendChild(resultDiv);
+            });
         }
 
         function renderLogs(logs) {
@@ -188,15 +381,45 @@
         }
 
         async function fetchAndRenderSelectedStrikes() {
+            // --- Save current order price input values by unique key ---
+            const listDiv = document.getElementById('selectedStrikesList');
+            const priceInputs = listDiv.querySelectorAll('.order-price-input');
+            const priceInputValues = {};
+            let focusedKey = null;
+            let cursorPos = null;
+            let cursorEnd = null;
+            if (document.activeElement && document.activeElement.classList.contains('order-price-input')) {
+                const input = document.activeElement;
+                const row = input.closest('.flex.items-center.justify-between.mb-2');
+                if (row) {
+                    const buyBtn = row.querySelector('.buy-btn');
+                    if (buyBtn) {
+                        focusedKey = `${buyBtn.getAttribute('data-symbol')}|${buyBtn.getAttribute('data-strike')}|${buyBtn.getAttribute('data-optiontype')}|${buyBtn.getAttribute('data-unique-key')}`;
+                        cursorPos = input.selectionStart;
+                        cursorEnd = input.selectionEnd;
+                    }
+                }
+            }
+            priceInputs.forEach(input => {
+                const row = input.closest('.flex.items-center.justify-between.mb-2');
+                if (row) {
+                    const buyBtn = row.querySelector('.buy-btn');
+                    if (buyBtn) {
+                        const key = `${buyBtn.getAttribute('data-symbol')}|${buyBtn.getAttribute('data-strike')}|${buyBtn.getAttribute('data-optiontype')}|${buyBtn.getAttribute('data-unique-key')}`;
+                        priceInputValues[key] = input.value;
+                    }
+                }
+            });
+
             const resp = await fetch('/api/selected_strikes');
             const data = await resp.json();
-            const listDiv = document.getElementById('selectedStrikesList');
             listDiv.innerHTML = '';
             if (!data.selected_strikes || data.selected_strikes.length === 0) {
                 listDiv.innerHTML = '<div class="text-gray-500">No strike met criteria.</div>';
                 return;
             }
             let lastSymbol = null;
+            let inputToFocus = null;
             data.selected_strikes.forEach(strike => {
                 if (lastSymbol !== strike.symbol) {
                     if (lastSymbol !== null) listDiv.appendChild(document.createElement('hr'));
@@ -228,6 +451,15 @@
                 `;
                 // Add event listeners for Buy/Sell
                 const priceInput = row.querySelector('.order-price-input');
+                // --- Restore saved value if present ---
+                const key = `${strike.symbol}|${strike.strike}|${strike.optiontype}|${strike.unique_key}`;
+                if (priceInputValues[key] !== undefined) {
+                    priceInput.value = priceInputValues[key];
+                }
+                // --- If this is the input that was focused, mark it for focus after render ---
+                if (focusedKey && key === focusedKey) {
+                    inputToFocus = priceInput;
+                }
                 row.querySelector('.buy-btn').onclick = async () => {
                     const button = row.querySelector('.buy-btn');
                     if (button.disabled) {
@@ -306,6 +538,13 @@
                 };
                 listDiv.appendChild(row);
             });
+            // --- Restore focus and cursor position if needed ---
+            if (inputToFocus) {
+                inputToFocus.focus();
+                if (cursorPos !== null && cursorEnd !== null) {
+                    inputToFocus.setSelectionRange(cursorPos, cursorEnd);
+                }
+            }
         }
 
         function appendLog(msg) {
@@ -364,9 +603,81 @@
             }
         });
 
+        startIncrementalButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/start_incremental_scanner', { method: 'POST' });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    appendLog(`[SUCCESS] Incremental scanner started: ${result.message}`);
+                    if (result.existing_results > 0) {
+                        appendLog(`[INFO] Adding to ${result.existing_results} existing results`);
+                    }
+                    // Start polling for status updates
+                    if (incrementalStatusInterval) {
+                        clearInterval(incrementalStatusInterval);
+                    }
+                    incrementalStatusInterval = setInterval(updateIncrementalProgress, 1000);
+                    await updateIncrementalProgress();
+                    // Start auto-refresh for selected strikes
+                    if (selectedStrikesInterval) clearInterval(selectedStrikesInterval);
+                    selectedStrikesInterval = setInterval(fetchAndRenderSelectedStrikes, 1000);
+                } else {
+                    appendLog(`[ERROR] Failed to start incremental scanner: ${result.message}`);
+                }
+            } catch (error) {
+                appendLog(`Error starting incremental scanner: ${error.message}`);
+            }
+        });
+
+        stopIncrementalButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/stop_incremental_scanner', { method: 'POST' });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    appendLog(`[SUCCESS] Incremental scanner stopped: ${result.message}`);
+                    // Stop polling
+                    if (incrementalStatusInterval) {
+                        clearInterval(incrementalStatusInterval);
+                        incrementalStatusInterval = null;
+                    }
+                    // Stop auto-refresh for selected strikes
+                    if (selectedStrikesInterval) {
+                        clearInterval(selectedStrikesInterval);
+                        selectedStrikesInterval = null;
+                    }
+                    await updateIncrementalProgress();
+                } else {
+                    appendLog(`[ERROR] Failed to stop incremental scanner: ${result.message}`);
+                }
+            } catch (error) {
+                appendLog(`Error stopping incremental scanner: ${error.message}`);
+            }
+        });
+
+        clearResultsButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/clear_incremental_results', { method: 'POST' });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    appendLog(`[SUCCESS] ${result.message}`);
+                    await updateIncrementalProgress();
+                    // Stop auto-refresh for selected strikes
+                    if (selectedStrikesInterval) {
+                        clearInterval(selectedStrikesInterval);
+                        selectedStrikesInterval = null;
+                    }
+                } else {
+                    appendLog(`[ERROR] Failed to clear results: ${result.message}`);
+                }
+            } catch (error) {
+                appendLog(`Error clearing results: ${error.message}`);
+            }
+        });
+
         // Initial load
         refreshLogsAndStatus();
         fetchAndRenderSelectedStrikes();
+        updateIncrementalProgress(); // Initial incremental status check
     </script>
 </body>
 </html> 

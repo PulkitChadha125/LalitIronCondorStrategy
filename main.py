@@ -303,22 +303,18 @@ def login_interactive_api():
             source="WEBAPI", 
             root="http://colo.srellp.com:3000"
         )
-        
         response = xt.interactive_login()
         print("Interactive Login Response:", response)
-        
+
         if response and 'result' in response and 'token' in response['result']:
             print("Interactive login successful")
-            
             # Start the net position fetcher thread
             from main import start_net_position_fetcher
             start_net_position_fetcher()
-            
             return xt
         else:
             print("Interactive login failed: ", response)
             return None
-            
     except Exception as e:
         print(f"Error during interactive login: {str(e)}")
         import traceback
@@ -559,7 +555,7 @@ def main_strategy():
         
         # Step 1: Fetch Future LTPs and calculate strike ranges
         print("[STEP 1] Fetching Future LTPs and calculating strike ranges...")
-        Future_MarketQuote(xts_marketdata)
+        Future_MarketQuote(xts_marketdata) 
         
         # Step 2: Fetch ALL option instrument IDs for all strikes (individual calls)
         print("[STEP 2] Fetching ALL option instrument IDs...")
@@ -971,6 +967,115 @@ def get_net_positions():
 # --- USAGE EXAMPLE ---
 # After successful login, call:
 # start_net_position_fetcher()
+
+def Future_MarketQuote_for_symbol(xts_marketdata, unique_key):
+    """Fetch Future LTP and calculate strike ranges for a single symbol."""
+    global result_dict
+    params = result_dict.get(unique_key)
+    if not params or not params.get("NSEFOexchangeInstrumentID"):
+        print(f"[WARN] No NSEFOexchangeInstrumentID for {unique_key}")
+        return
+    instrument_id = params["NSEFOexchangeInstrumentID"]
+    try:
+        response = xts_marketdata.get_quote(
+            Instruments=[{"exchangeSegment": 2, "exchangeInstrumentID": instrument_id}],
+            xtsMessageCode=1501,
+            publishFormat='JSON'
+        )
+        if response and response.get("type") == "success":
+            quote_strings = response["result"].get("listQuotes", [])
+            for quote_str in quote_strings:
+                item = json.loads(quote_str)
+                ltp = item.get("LastTradedPrice")
+                params["Futltp"] = int(ltp) if ltp else None
+                if params["Futltp"] and params["StepPercentage"] and params["StepSize"]:
+                    step_percentage = int(params["StepPercentage"])
+                    step_size = int(params["StepSize"])
+                    strikes = calculate_strike_ranges(params["Futltp"], step_percentage, step_size)
+                    params["Optionchain"] = strikes
+        else:
+            print(f"[ERROR] Unexpected quote response for {unique_key}: {response}")
+    except Exception as e:
+        print(f"[ERROR] While fetching quote for {unique_key}: {e}")
+        traceback.print_exc()
+    result_dict[unique_key] = params
+
+def fetch_option_instrument_ids_for_symbol(xts_marketdata, unique_key):
+    """Fetch option instrument IDs for all strikes for a single symbol."""
+    global result_dict
+    params = result_dict.get(unique_key)
+    if not params:
+        return
+    symbol = params.get("Symbol")
+    optionchain = params.get("Optionchain")
+    expiry = params.get("Expiry")
+    option_type = params.get("OptionType")
+    if not optionchain or not expiry or not option_type:
+        return
+    expiry_api_format = datetime.datetime.strptime(expiry, "%d-%m-%Y").strftime("%d%b%Y")
+    for strike_price in optionchain.keys():
+        try:
+            opt_response = xts_marketdata.get_option_symbol(
+                exchangeSegment=2,
+                series='OPTSTK',
+                symbol=symbol,
+                expiryDate=expiry_api_format,
+                optionType=option_type,
+                strikePrice=strike_price
+            )
+            if opt_response['type'] == 'success' and 'result' in opt_response and opt_response['result']:
+                instrument_id = int(opt_response['result'][0]['ExchangeInstrumentID'])
+                optionchain[strike_price]['instrument_id'] = instrument_id
+            else:
+                optionchain[strike_price]['instrument_id'] = None
+        except Exception as e:
+            optionchain[strike_price]['instrument_id'] = None
+    params["Optionchain"] = optionchain
+    result_dict[unique_key] = params
+
+def Option_MarketQuote_for_symbol(xts_marketdata, unique_key):
+    """Fetch option LTPs for all strikes for a single symbol."""
+    global result_dict
+    params = result_dict.get(unique_key)
+    if not params:
+        return
+    optionchain = params.get("Optionchain")
+    if not optionchain:
+        return
+    option_instrument_id_list = []
+    for strike_price, strike_data in optionchain.items():
+        instrument_id = strike_data.get("instrument_id")
+        if instrument_id:
+            option_instrument_id_list.append({
+                "exchangeSegment": 2,
+                "exchangeInstrumentID": instrument_id
+            })
+    if not option_instrument_id_list:
+        return
+    chunk_size = 25
+    for chunk in chunk_instruments(option_instrument_id_list, chunk_size):
+        try:
+            response = xts_marketdata.get_quote(
+                Instruments=chunk,
+                xtsMessageCode=1501,
+                publishFormat='JSON'
+            )
+            if response and response.get("type") == "success":
+                quote_strings = response["result"].get("listQuotes", [])
+                for quote_str in quote_strings:
+                    item = json.loads(quote_str)
+                    instrument_id = item.get("ExchangeInstrumentID")
+                    ltp = item.get("LastTradedPrice")
+                    for strike_price, strike_data in optionchain.items():
+                        if strike_data.get("instrument_id") == instrument_id:
+                            strike_data["optionltp"] = float(ltp) if ltp else None
+                            break
+            else:
+                continue
+        except Exception as e:
+            continue
+    params["Optionchain"] = optionchain
+    result_dict[unique_key] = params
 
 if __name__ == "__main__":
     # # Initialize settings and credentials

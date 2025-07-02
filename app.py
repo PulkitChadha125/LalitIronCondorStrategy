@@ -15,6 +15,11 @@ interactive_logged_in = False
 xts_marketdata_obj = None  # Global to store the API object
 result_data = None
 
+# New variables for incremental scanning
+incremental_scanner_status = "stopped"
+current_symbol_index = 0
+symbols_to_scan = []
+incremental_results = {}
 
 def log_message(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -660,6 +665,332 @@ def exit_position_api():
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Failed to place exit order: {str(e)}"})
+
+@app.route('/api/start_incremental_scanner', methods=['POST'])
+def start_incremental_scanner():
+    global incremental_scanner_status, current_symbol_index, symbols_to_scan, incremental_results, xts_marketdata_obj
+    
+    if incremental_scanner_status == "running":
+        return jsonify({"status": "error", "message": "Incremental scanner is already running"})
+    
+    if not xts_marketdata_obj or not hasattr(xts_marketdata_obj, 'token') or not xts_marketdata_obj.token:
+        log_message("[ERROR] Market Token is missing. Please login again.")
+        return jsonify({"status": "error", "message": "Market Token is missing. Please login again."})
+
+    if not market_data_logged_in or not xts_marketdata_obj:
+        log_message("Please login to Market Data API before starting the scanner.")
+        return jsonify({"status": "error", "message": "Login to Market Data API first."})
+
+    try:
+        # Load settings and get symbol list
+        from main import get_user_settings, set_marketdata_connection
+        
+        # Set the global market data connection
+        set_marketdata_connection(xts_marketdata_obj)
+        
+        # Load settings and get symbol list
+        get_user_settings()
+        from main import result_dict
+        
+        if not result_dict:
+            log_message("No symbols found in TradeSettings.csv")
+            return jsonify({"status": "error", "message": "No symbols found in TradeSettings.csv"})
+        
+        # Initialize incremental scanning variables
+        symbols_to_scan = list(result_dict.keys())
+        current_symbol_index = 0
+        # Don't clear incremental_results - preserve previous results
+        if not incremental_results:
+            incremental_results = {}
+        incremental_scanner_status = "running"
+        
+        existing_results_count = len(incremental_results)
+        if existing_results_count > 0:
+            log_message(f"Incremental scanner started with {len(symbols_to_scan)} symbols (adding to {existing_results_count} existing results)")
+            message = f"Incremental scanner started with {len(symbols_to_scan)} symbols (adding to {existing_results_count} existing results)"
+        else:
+            log_message(f"Incremental scanner started with {len(symbols_to_scan)} symbols")
+            message = f"Incremental scanner started with {len(symbols_to_scan)} symbols"
+        
+        log_message("Processing symbols one by one...")
+        
+        # Start the first symbol processing
+        process_next_symbol()
+        
+        return jsonify({
+            "status": "success", 
+            "message": message,
+            "total_symbols": len(symbols_to_scan),
+            "existing_results": existing_results_count
+        })
+        
+    except Exception as e:
+        log_message(f"Error starting incremental scanner: {str(e)}")
+        incremental_scanner_status = "stopped"
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Error starting scanner: {str(e)}"})
+
+def process_next_symbol():
+    """Process the next symbol in the queue"""
+    global current_symbol_index, symbols_to_scan, incremental_scanner_status, incremental_results, xts_marketdata_obj
+    
+    if incremental_scanner_status != "running" or current_symbol_index >= len(symbols_to_scan):
+        incremental_scanner_status = "stopped"
+        log_message("Incremental scanner completed.")
+        return
+    
+    try:
+        unique_key = symbols_to_scan[current_symbol_index]
+        from main import result_dict
+        symbol_data = result_dict.get(unique_key, {})
+        symbol = symbol_data.get("Symbol", "Unknown")
+        
+        log_message(f"Processing symbol {current_symbol_index + 1}/{len(symbols_to_scan)}: {symbol}")
+        
+        # Process this single symbol
+        result = process_single_symbol(unique_key, symbol_data)
+        
+        # Store the result
+        incremental_results[unique_key] = result
+        
+        # Log the result
+        if result.get("success"):
+            log_message(f"✓ {symbol} completed successfully")
+            if result.get("selected_strikes"):
+                log_message(f"  Selected strikes: {result['selected_strikes']}")
+        else:
+            log_message(f"✗ {symbol} failed: {result.get('error', 'Unknown error')}")
+        
+        # Move to next symbol
+        current_symbol_index += 1
+        
+        # Process next symbol after a short delay
+        import threading
+        threading.Timer(1.0, process_next_symbol).start()
+        
+    except Exception as e:
+        log_message(f"Error processing symbol: {str(e)}")
+        current_symbol_index += 1
+        # Continue with next symbol
+        import threading
+        threading.Timer(1.0, process_next_symbol).start()
+
+def process_single_symbol(unique_key, symbol_data):
+    """Process a single symbol and return the result"""
+    try:
+        symbol = symbol_data.get("Symbol")
+        option_type = symbol_data.get("OptionType")
+        
+        log_message(f"Fetching LTP for {symbol}...")
+        
+        # Step 1: Fetch Future LTP for this symbol (per-symbol)
+        from main import Future_MarketQuote_for_symbol
+        Future_MarketQuote_for_symbol(xts_marketdata_obj, unique_key)
+        
+        # Get updated data
+        from main import result_dict
+        updated_data = result_dict.get(unique_key, {})
+        fut_ltp = updated_data.get("Futltp")
+        optionchain = updated_data.get("Optionchain")
+        
+        if fut_ltp is None:
+            return {"success": False, "error": "Could not fetch LTP"}
+        
+        log_message(f"{symbol} LTP: {fut_ltp}")
+        
+        if not optionchain:
+            return {"success": False, "error": "No option chain available"}
+        
+        # Step 2: Fetch option instrument IDs for this symbol (per-symbol)
+        log_message(f"Fetching option instrument IDs for {symbol}...")
+        from main import fetch_option_instrument_ids_for_symbol
+        fetch_option_instrument_ids_for_symbol(xts_marketdata_obj, unique_key)
+        
+        # Step 3: Fetch option LTPs for this symbol (per-symbol)
+        log_message(f"Fetching option LTPs for {symbol}...")
+        from main import Option_MarketQuote_for_symbol
+        Option_MarketQuote_for_symbol(xts_marketdata_obj, unique_key)
+        
+        # Step 4: Select strikes for this symbol
+        log_message(f"Selecting strikes for {symbol}...")
+        selected_strikes = None
+        if option_type == "CE":
+            from main import select_ce_strikes
+            selected_strikes = select_ce_strikes(updated_data)
+        elif option_type == "PE":
+            from main import select_pe_strikes
+            selected_strikes = select_pe_strikes(updated_data)
+        
+        # Update the result_dict with selected strikes (always, even if None)
+        if option_type == "CE":
+            updated_data["optionselectedstrike_CE"] = selected_strikes if selected_strikes else None
+        else:
+            updated_data["optionselectedstrike_PE"] = selected_strikes if selected_strikes else None
+        result_dict[unique_key] = updated_data
+        
+        return {
+            "success": True,
+            "symbol": symbol,
+            "ltp": fut_ltp,
+            "strikes_count": len(optionchain),
+            "selected_strikes": list(selected_strikes.keys()) if selected_strikes else [],
+            "option_type": option_type
+        }
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def fetch_single_symbol_option_ids(unique_key, symbol_data):
+    """Fetch option instrument IDs for a single symbol"""
+    try:
+        symbol = symbol_data.get("Symbol")
+        optionchain = symbol_data.get("Optionchain", {})
+        expiry = symbol_data.get("Expiry")
+        option_type = symbol_data.get("OptionType")
+        
+        if not optionchain or not expiry or not option_type:
+            return False
+        
+        # Convert expiry to API format
+        import datetime
+        expiry_api_format = datetime.datetime.strptime(expiry, "%d-%m-%Y").strftime("%d%b%Y")
+        
+        successful_fetches = 0
+        for strike_price in optionchain.keys():
+            try:
+                opt_response = xts_marketdata_obj.get_option_symbol(
+                    exchangeSegment=2,      # NSEFO
+                    series='OPTSTK',
+                    symbol=symbol,
+                    expiryDate=expiry_api_format,
+                    optionType=option_type,
+                    strikePrice=strike_price
+                )
+                
+                if opt_response['type'] == 'success' and 'result' in opt_response and opt_response['result']:
+                    instrument_id = int(opt_response['result'][0]['ExchangeInstrumentID'])
+                    optionchain[strike_price]['instrument_id'] = instrument_id
+                    successful_fetches += 1
+                else:
+                    optionchain[strike_price]['instrument_id'] = None
+                    
+            except Exception as e:
+                optionchain[strike_price]['instrument_id'] = None
+        
+        # Update the result_dict
+        from main import result_dict
+        symbol_data["Optionchain"] = optionchain
+        result_dict[unique_key] = symbol_data
+        
+        return successful_fetches > 0
+        
+    except Exception as e:
+        log_message(f"Error fetching option IDs for {symbol}: {str(e)}")
+        return False
+
+def fetch_single_symbol_option_ltps(unique_key, symbol_data):
+    """Fetch option LTPs for a single symbol"""
+    try:
+        symbol = symbol_data.get("Symbol")
+        optionchain = symbol_data.get("Optionchain", {})
+        
+        if not optionchain:
+            return False
+        
+        # Collect instrument IDs for this symbol
+        option_instrument_id_list = []
+        for strike_price, strike_data in optionchain.items():
+            instrument_id = strike_data.get("instrument_id")
+            if instrument_id:
+                option_instrument_id_list.append({
+                    "exchangeSegment": 2,  # NSEFO
+                    "exchangeInstrumentID": instrument_id
+                })
+        
+        if not option_instrument_id_list:
+            return False
+        
+        # Fetch LTPs in chunks of 25
+        from main import chunk_instruments
+        chunk_size = 25
+        
+        for chunk in chunk_instruments(option_instrument_id_list, chunk_size):
+            try:
+                response = xts_marketdata_obj.get_quote(
+                    Instruments=chunk,
+                    xtsMessageCode=1501,
+                    publishFormat='JSON'
+                )
+                
+                if response and response.get("type") == "success":
+                    quote_strings = response["result"].get("listQuotes", [])
+                    
+                    for quote_str in quote_strings:
+                        try:
+                            quote_data = json.loads(quote_str)
+                            instrument_id = quote_data.get("ExchangeInstrumentID")
+                            ltp = quote_data.get("Touchline", {}).get("LastTradedPrice", 0)
+                            
+                            # Find the strike price for this instrument ID
+                            for strike_price, strike_data in optionchain.items():
+                                if strike_data.get("instrument_id") == instrument_id:
+                                    strike_data["optionltp"] = ltp
+                                    break
+                                    
+                        except json.JSONDecodeError:
+                            continue
+                            
+            except Exception as e:
+                log_message(f"Error fetching LTPs for chunk: {str(e)}")
+                continue
+        
+        # Update the result_dict
+        from main import result_dict
+        symbol_data["Optionchain"] = optionchain
+        result_dict[unique_key] = symbol_data
+        
+        return True
+        
+    except Exception as e:
+        log_message(f"Error fetching option LTPs for {symbol}: {str(e)}")
+        return False
+
+@app.route('/api/stop_incremental_scanner', methods=['POST'])
+def stop_incremental_scanner():
+    global incremental_scanner_status
+    if incremental_scanner_status != "running":
+        return jsonify({"status": "error", "message": "Incremental scanner is not running"})
+    incremental_scanner_status = "stopped"
+    log_message("Incremental scanner stopped by user.")
+    return jsonify({"status": "success", "message": "Incremental scanner stopped"})
+
+@app.route('/api/incremental_scanner_status', methods=['GET'])
+def get_incremental_scanner_status():
+    global incremental_scanner_status, current_symbol_index, symbols_to_scan, incremental_results
+    
+    return jsonify({
+        "status": incremental_scanner_status,
+        "current_index": current_symbol_index,
+        "total_symbols": len(symbols_to_scan),
+        "completed_symbols": len(incremental_results),
+        "progress_percentage": (current_symbol_index / len(symbols_to_scan) * 100) if symbols_to_scan else 0,
+        "results": incremental_results
+    })
+
+@app.route('/api/clear_incremental_results', methods=['POST'])
+def clear_incremental_results():
+    global incremental_results, current_symbol_index, symbols_to_scan, incremental_scanner_status
+    
+    if incremental_scanner_status == "running":
+        return jsonify({"status": "error", "message": "Cannot clear results while scanner is running"})
+    
+    incremental_results = {}
+    current_symbol_index = 0
+    symbols_to_scan = []
+    log_message("Incremental scanner results cleared.")
+    
+    return jsonify({"status": "success", "message": "Incremental scanner results cleared"})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000) 
