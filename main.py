@@ -176,12 +176,7 @@ def get_user_settings():
             expiry_api_format = datetime.datetime.strptime(expiry, "%d-%m-%Y").strftime("%d%b%Y")
 
            
-            # Fetch EQ instrument ID (NSECM)
-            eq_response = xts_marketdata.get_equity_symbol(
-                exchangeSegment=1,      # NSECM
-                series='EQ',
-                symbol=symbol
-            )
+        
 
             # Fetch FUTSTK instrument ID
             fut_response = xts_marketdata.get_future_symbol(
@@ -202,18 +197,7 @@ def get_user_settings():
                 NSEFOinstrument_id = None
                 lot_size = None
 
-            # Fetch EQ instrument ID (NSECM)
-            eq_response = xts_marketdata.get_equity_symbol(
-                exchangeSegment=1,      # NSECM
-                series='EQ',
-                symbol=symbol
-            )
-
-            if eq_response['type'] == 'success' and 'result' in eq_response:
-                NSECMinstrument_id = int(eq_response['result'][0]['ExchangeInstrumentID'])
-            else:
-                print(f"[ERROR] Could not get EQ instrument ID for {symbol}")
-                NSECMinstrument_id = None
+           
 
           
             symbol_dict = {
@@ -221,7 +205,7 @@ def get_user_settings():
                 "Expiry": expiry,
                 "Quantity": int(row['Quantity']),"StrikeStep": int(row['StrikeStep']),
                 "AllowedPercentage": int(row['AllowedPercentage']),"NSEFOexchangeInstrumentID": NSEFOinstrument_id,"MarginRequired":int(row['MarginRequired']),
-                "NSECMexchangeInstrumentID": NSECMinstrument_id,"LotSize": lot_size,"LTP":None,"StepSize":int(row['StepSize']),"StepNumber":int(row['StepNumber']),
+                "NSECMexchangeInstrumentID": 0,"LotSize": lot_size,"LTP":None,"StepSize":int(row['StepSize']),"StepNumber":int(row['StepNumber']),
                 "StepPercentage":int(row['StepPercentage']),"OptionType":row['OptionType'],"Optionchain":None
                 
             }
@@ -232,11 +216,7 @@ def get_user_settings():
                 "exchangeInstrumentID": NSEFOinstrument_id
                 })
 
-            if NSECMinstrument_id:
-                Equity_instrument_id_list.append({
-                    "exchangeSegment": 1,
-                    "exchangeInstrumentID": NSECMinstrument_id
-                })
+            
 
             result_dict[symbol_dict["unique_key"]] = symbol_dict
 
@@ -889,7 +869,6 @@ def fetch_net_positions():
             # For dealer accounts, we need to pass clientID
             # From the login response, we can see clientCodes: ['CLI4342']
             response = xt.get_position_netwise(clientID="CLI4342")
-            print("response", response)
             if response and response.get('type') == 'success':
                 # Extract positionList from the response structure
                 result = response.get('result', {})
@@ -902,19 +881,12 @@ def fetch_net_positions():
                         valid_positions.append(pos)
                 
                 net_positions = valid_positions
-                print(f"[NET POSITION] Fetched {len(positions_data)} total positions, {len(valid_positions)} valid positions at {datetime.datetime.now().strftime('%H:%M:%S')}")
-                
-                # Debug: Print the structure of the first valid position
-                if valid_positions and len(valid_positions) > 0:
-                    print(f"[NET POSITION] Sample position structure: {valid_positions[0]}")
-                else:
-                    print("[NET POSITION] No valid positions found (this is normal if you have no open positions)")
             else:
-                print(f"[NET POSITION] Error fetching net positions: {response}")
+                pass  # Silently handle errors
         else:
-            print("[NET POSITION] Interactive API not logged in")
+            pass  # Silently handle when not logged in
     except Exception as e:
-        print(f"[NET POSITION] Exception while fetching net positions: {str(e)}")
+        pass  # Silently handle exceptions
 
 def start_net_position_fetcher():
     """
@@ -922,19 +894,16 @@ def start_net_position_fetcher():
     This function should be called after successful interactive login.
     """
     def net_position_worker():
-        print("[NET POSITION] Starting net position fetcher thread...")
         while True:
             try:
                 fetch_net_positions()
                 time.sleep(2)  # Wait 2 seconds before next fetch
             except Exception as e:
-                print(f"[NET POSITION] Error in net position worker: {str(e)}")
                 time.sleep(2)  # Continue trying even if there's an error
     
     # Start the background thread
     net_position_thread = threading.Thread(target=net_position_worker, daemon=True)
     net_position_thread.start()
-    print("[NET POSITION] Net position fetcher thread started successfully")
 
 def get_net_positions():
     """
@@ -961,7 +930,7 @@ def get_net_positions():
                 'exchangeInstrumentId': pos.get('ExchangeInstrumentId', ''),
             })
         except Exception as e:
-            print('[NET POSITION] Error extracting fields:', e)
+            pass  # Silently handle field extraction errors
     return result
 
 # --- USAGE EXAMPLE ---
